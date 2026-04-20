@@ -7,46 +7,85 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template_string, request
 from openai import OpenAI
+from pypdf import PdfReader
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env", override=False)
 
 app = Flask(__name__)
 
 # ----------------------------
 # ENV
 # ----------------------------
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
 
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
-GRAPH_VERSION = os.getenv("GRAPH_VERSION", "v23.0")
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "").strip()
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
+GRAPH_VERSION = os.getenv("GRAPH_VERSION", "v23.0").strip()
 
-BOT_NUMBER = os.getenv("BOT_NUMBER", "")
+BOT_NUMBER = os.getenv("BOT_NUMBER", "").strip()
 
-CS_NUMBERS = {
-    "north": os.getenv("CS_NORTH", ""),
-    "south": os.getenv("CS_SOUTH", ""),
-    "east": os.getenv("CS_EAST", ""),
-    "west": os.getenv("CS_WEST", ""),
-    "centre": os.getenv("CS_CENTRE", ""),
+OUTLET_CONTACTS = {
+    "alexandra": os.getenv("OUTLET_ALEXANDRA", "").strip(),
+    "katong": os.getenv("OUTLET_KATONG", "").strip(),
+    "kovan": os.getenv("OUTLET_KOVAN", "").strip(),
+    "upper bukit timah": os.getenv("OUTLET_UPPER_BUKIT_TIMAH", "").strip(),
+    "woodlands": os.getenv("OUTLET_WOODLANDS", "").strip(),
 }
-print("OPENAI_API_KEY found:", bool(OPENAI_API_KEY))
-print("OPENAI_API_KEY starts with:", OPENAI_API_KEY[:5] if OPENAI_API_KEY else "EMPTY")
+
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is missing. Check your .env file.")
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-
 # ----------------------------
-# FILE PATHS
+# FILES
 # ----------------------------
-KNOWLEDGE_PATH = Path("data/jal_yoga_faq.txt")
+PDF_PATH = BASE_DIR / "data" / "jal_yoga_faq.pdf"
 
 # ----------------------------
 # MEMORY
 # ----------------------------
 SESSIONS = {}
 MAX_HISTORY = 8
+
+# ----------------------------
+# LOCAL RETRIEVAL SETTINGS
+# ----------------------------
+CHUNK_SIZE = 1200
+CHUNK_OVERLAP = 200
+TOP_K_CHUNKS = 5
+MIN_RETRIEVAL_SCORE = 5
+
+MENU_CONTEXT = {
+    "1": {
+        "name": "Schedule a Trial",
+        "query_prefix": "The user is asking under the Jal Yoga menu category: Schedule a Trial.",
+        "followup": "Sure — what would you like to know about booking a trial class?",
+    },
+    "2": {
+        "name": "I’m a current member",
+        "query_prefix": "The user is asking under the Jal Yoga menu category: Current Member Support.",
+        "followup": "Sure — what would you like help with as a current member?",
+    },
+    "3": {
+        "name": "I’d like to find out more about Jal Yoga",
+        "query_prefix": "The user is asking under the Jal Yoga menu category: General Enquiry.",
+        "followup": "Sure — what would you like to find out more about?",
+    },
+    "4": {
+        "name": "Corporate / Partnerships",
+        "query_prefix": "The user is asking under the Jal Yoga menu category: Corporate / Partnerships.",
+        "followup": "Sure — what would you like to know about corporate or partnership enquiries?",
+    },
+    "5": {
+        "name": "Staff Hub",
+        "query_prefix": "The user is asking under the Jal Yoga menu category: Staff Hub.",
+        "followup": "Sure — what would you like help with for Staff Hub?",
+    },
+}
 
 WELCOME_MESSAGE = """Namaste! Thank you for reaching out to Jal Yoga. 🙏
 
@@ -57,16 +96,19 @@ Please choose an option:
 4. Corporate / Partnerships
 5. Staff Hub
 
+You can also type your question directly.
 You can also type: human
 """
 
-AREA_PROMPT = """Please choose your area so I can send you the correct customer service contact:
+OUTLET_PROMPT = """I’m unable to find that clearly in our Jal Yoga PDF information.
 
-1. North
-2. South
-3. East
-4. West
-5. Centre
+Please choose your preferred outlet and I’ll connect you there:
+
+1. Alexandra
+2. Katong
+3. Kovan
+4. Upper Bukit Timah
+5. Woodlands
 """
 
 HOME_HTML = """
@@ -159,20 +201,24 @@ HOME_HTML = """
 
         <div class="grid">
             <div class="card">
-                <h3>Book a Trial</h3>
-                <p>Ask about trial classes and get guided step by step.</p>
+                <h3>Schedule a Trial</h3>
+                <p>Ask about trial booking and studio visit details.</p>
             </div>
             <div class="card">
-                <h3>Member Support</h3>
-                <p>Get help with cancellation, suspension, and class booking issues.</p>
+                <h3>Current Member</h3>
+                <p>Get help with cancellation, suspension, booking, and member support.</p>
             </div>
             <div class="card">
-                <h3>General Enquiry</h3>
-                <p>Ask about studio locations, operating hours, class types, and policies.</p>
+                <h3>Find Out More</h3>
+                <p>Ask about class types, schedules, policies, locations, and operating hours.</p>
             </div>
             <div class="card">
-                <h3>Talk to Human</h3>
-                <p>If the bot cannot help, it will pass you to the correct area team.</p>
+                <h3>Corporate / Partnerships</h3>
+                <p>Ask about wellness partnerships and corporate enquiries.</p>
+            </div>
+            <div class="card">
+                <h3>Staff Hub</h3>
+                <p>Get help with staff-related booking flow questions.</p>
             </div>
         </div>
     </div>
@@ -183,47 +229,171 @@ HOME_HTML = """
 """
 
 
-def load_knowledge() -> str:
-    if not KNOWLEDGE_PATH.exists():
-        raise FileNotFoundError(
-            f"Knowledge file not found: {KNOWLEDGE_PATH}. "
-            f"Run convert_pdf.py first."
-        )
-    return KNOWLEDGE_PATH.read_text(encoding="utf-8").strip()
+def normalize_spaces(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
 
 
-KNOWLEDGE_TEXT = load_knowledge()
+def split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP):
+    text = normalize_spaces(text)
+    if not text:
+        return []
+
+    chunks = []
+    start = 0
+    length = len(text)
+
+    while start < length:
+        end = min(start + chunk_size, length)
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        if end >= length:
+            break
+
+        start = max(end - overlap, start + 1)
+
+    return chunks
 
 
-def build_system_prompt() -> str:
+def load_pdf_chunks():
+    if not PDF_PATH.exists():
+        raise FileNotFoundError(f"Missing PDF file: {PDF_PATH}")
+
+    reader = PdfReader(str(PDF_PATH))
+    chunks = []
+
+    for page_num, page in enumerate(reader.pages, start=1):
+        raw_text = page.extract_text() or ""
+        raw_text = raw_text.strip()
+
+        if not raw_text:
+            continue
+
+        page_chunks = split_text(raw_text)
+
+        for idx, chunk in enumerate(page_chunks, start=1):
+            chunks.append(
+                {
+                    "page": page_num,
+                    "chunk_index": idx,
+                    "text": f"[Page {page_num}]\n{chunk}",
+                }
+            )
+
+    if not chunks:
+        raise ValueError("No readable text was extracted from the PDF.")
+
+    return chunks
+
+
+PDF_CHUNKS = load_pdf_chunks()
+
+
+def tokenize(text: str):
+    words = re.findall(r"[a-zA-Z0-9$]+", text.lower())
+    stopwords = {
+        "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "is", "are",
+        "i", "you", "me", "my", "we", "our", "your", "it", "this", "that", "with",
+        "what", "how", "can", "do", "does", "about", "please", "would", "like",
+        "tell", "more", "find", "out", "help", "need"
+    }
+    return [word for word in words if word not in stopwords]
+
+
+def score_chunk(search_text: str, chunk_text: str):
+    score = 0
+    query_tokens = tokenize(search_text)
+    chunk_lower = chunk_text.lower()
+    query_lower = search_text.lower()
+
+    for token in query_tokens:
+        if token in chunk_lower:
+            score += 3
+
+    phrase_boosts = [
+        "trial",
+        "schedule",
+        "trial class",
+        "current member",
+        "cancellation",
+        "cancel",
+        "suspension",
+        "medical",
+        "travel",
+        "class booking",
+        "refer a friend",
+        "location",
+        "locations",
+        "operating hours",
+        "class types",
+        "class schedule",
+        "studio policy",
+        "corporate",
+        "partnerships",
+        "staff hub",
+        "alexandra",
+        "katong",
+        "kovan",
+        "upper bukit timah",
+        "woodlands",
+    ]
+
+    for phrase in phrase_boosts:
+        if phrase in query_lower and phrase in chunk_lower:
+            score += 8
+
+    return score
+
+
+def retrieve_relevant_chunks(user_message: str, current_menu: str | None):
+    search_text = user_message.strip()
+
+    if current_menu in MENU_CONTEXT:
+        search_text = f"{MENU_CONTEXT[current_menu]['name']} {search_text}"
+
+    scored = []
+    for item in PDF_CHUNKS:
+        score = score_chunk(search_text, item["text"])
+        scored.append((score, item))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    best_score = scored[0][0] if scored else 0
+    chosen = [item for score, item in scored[:TOP_K_CHUNKS] if score > 0]
+
+    relevant_text = "\n\n---\n\n".join(chunk["text"] for chunk in chosen)
+    return relevant_text, best_score
+
+
+def build_system_prompt(relevant_knowledge: str) -> str:
     return f"""
 You are Jal Yoga's WhatsApp assistant.
 
-Use only the knowledge below.
+You must answer ONLY from the PDF knowledge below.
 Do not invent facts.
-If the answer is not clearly inside the knowledge, reply with exactly:
+If the answer is not clearly supported by the knowledge below, reply with exactly:
 HANDOFF
 
 If the user asks for:
 - a human
-- agent
+- an agent
 - customer service
-- complaint
-- refund
-- difficult case
+- a complaint
+- a refund
+- a difficult case
 reply with exactly:
 HANDOFF
 
-Style rules:
-- friendly
-- simple English
+Style:
 - warm
+- simple English
 - concise
 - helpful
-- keep replies under 120 words when possible
+- under 120 words when possible
 
-JAL YOGA KNOWLEDGE:
-{KNOWLEDGE_TEXT}
+PDF KNOWLEDGE:
+{relevant_knowledge}
 """.strip()
 
 
@@ -246,41 +416,31 @@ def wa_link(number: str, text: str = "") -> str:
     return f"https://wa.me/{digits}"
 
 
-def get_session(phone: str) -> dict:
+def get_session(phone: str):
     if phone not in SESSIONS:
         SESSIONS[phone] = {
             "history": [],
-            "awaiting_area": False,
+            "current_menu": None,
+            "awaiting_outlet_handoff": False,
         }
     return SESSIONS[phone]
 
 
-def reset_session(phone: str) -> None:
+def reset_session(phone: str):
     SESSIONS[phone] = {
         "history": [],
-        "awaiting_area": False,
+        "current_menu": None,
+        "awaiting_outlet_handoff": False,
     }
 
 
-def add_history(phone: str, role: str, content: str) -> None:
+def add_history(phone: str, role: str, content: str):
     session = get_session(phone)
     session["history"].append({"role": role, "content": content})
     session["history"] = session["history"][-MAX_HISTORY:]
 
 
-def build_chat_input(phone: str, user_message: str) -> str:
-    session = get_session(phone)
-    lines = []
-
-    for item in session["history"]:
-        role = item["role"].title()
-        lines.append(f"{role}: {item['content']}")
-
-    lines.append(f"User: {user_message}")
-    return "\n".join(lines)
-
-
-def is_human_request(text: str) -> bool:
+def is_human_request(text: str):
     text = text.lower()
     keywords = [
         "human",
@@ -291,52 +451,82 @@ def is_human_request(text: str) -> bool:
         "complaint",
         "refund",
         "not helpful",
-        "someone call me",
         "talk to person",
         "talk to staff",
+        "talk to human",
     ]
     return any(keyword in text for keyword in keywords)
 
 
-def parse_area(text: str) -> str:
-    text = text.strip().lower()
+def parse_outlet(text: str):
+    t = text.strip().lower()
     mapping = {
-        "1": "north",
-        "2": "south",
-        "3": "east",
-        "4": "west",
-        "5": "centre",
-        "north": "north",
-        "south": "south",
-        "east": "east",
-        "west": "west",
-        "centre": "centre",
-        "center": "centre",
+        "1": "alexandra",
+        "2": "katong",
+        "3": "kovan",
+        "4": "upper bukit timah",
+        "5": "woodlands",
+        "alexandra": "alexandra",
+        "katong": "katong",
+        "kovan": "kovan",
+        "upper bukit timah": "upper bukit timah",
+        "bukit timah": "upper bukit timah",
+        "woodlands": "woodlands",
     }
-    return mapping.get(text, "")
+    return mapping.get(t, "")
 
 
-def handoff_message(area: str) -> str:
-    number = CS_NUMBERS.get(area, "")
+def handoff_message(outlet: str):
+    number = OUTLET_CONTACTS.get(outlet, "")
     if not number:
-        return "Sorry, I could not find that customer service number yet."
+        return "Sorry, I could not find that outlet contact number yet."
 
-    link = wa_link(number, "Hello, I need help from Jal Yoga customer service.")
+    message = f"Hello, I need help from Jal Yoga {outlet.title()}."
+    link = wa_link(number, message)
+
     return (
-        f"I’m connecting you to our {area.title()} customer service team.\n\n"
+        f"I’m connecting you to our {outlet.title()} team.\n\n"
         f"Contact Number: {display_number(number)}\n"
         f"WhatsApp Link: {link}\n\n"
         f"You can message them directly from the link above."
     )
 
 
-def ask_openai(phone: str, user_message: str) -> str:
-    conversation_text = build_chat_input(phone, user_message)
+def handle_menu_selection(phone: str, text: str):
+    clean = text.strip()
+    if clean in MENU_CONTEXT:
+        session = get_session(phone)
+        session["current_menu"] = clean
+        return MENU_CONTEXT[clean]["followup"]
+    return None
+
+
+def ask_openai(phone: str, user_message: str):
+    session = get_session(phone)
+    current_menu = session.get("current_menu")
+
+    relevant_knowledge, best_score = retrieve_relevant_chunks(user_message, current_menu)
+
+    if not relevant_knowledge or best_score < MIN_RETRIEVAL_SCORE:
+        return "HANDOFF"
+
+    recent_history = session["history"][-6:]
+    lines = []
+
+    if current_menu in MENU_CONTEXT:
+        lines.append(MENU_CONTEXT[current_menu]["query_prefix"])
+
+    for item in recent_history:
+        role = item["role"].title()
+        lines.append(f"{role}: {item['content']}")
+
+    lines.append(f"User: {user_message}")
+    conversation_text = "\n".join(lines)
 
     try:
         response = client.responses.create(
             model=OPENAI_MODEL,
-            instructions=build_system_prompt(),
+            instructions=build_system_prompt(relevant_knowledge),
             input=conversation_text,
         )
         answer = (response.output_text or "").strip()
@@ -346,7 +536,7 @@ def ask_openai(phone: str, user_message: str) -> str:
         return "HANDOFF"
 
 
-def build_bot_reply(phone: str, user_message: str) -> str:
+def build_bot_reply(phone: str, user_message: str):
     clean_text = (user_message or "").strip()
     lower_text = clean_text.lower()
 
@@ -359,30 +549,34 @@ def build_bot_reply(phone: str, user_message: str) -> str:
 
     session = get_session(phone)
 
-    if session["awaiting_area"]:
-        area = parse_area(clean_text)
-        if not area:
-            return AREA_PROMPT
+    if session["awaiting_outlet_handoff"]:
+        outlet = parse_outlet(clean_text)
+        if not outlet:
+            return OUTLET_PROMPT
 
-        session["awaiting_area"] = False
-        return handoff_message(area)
+        session["awaiting_outlet_handoff"] = False
+        return handoff_message(outlet)
 
     if is_human_request(clean_text):
-        session["awaiting_area"] = True
-        return AREA_PROMPT
+        session["awaiting_outlet_handoff"] = True
+        return OUTLET_PROMPT
+
+    menu_reply = handle_menu_selection(phone, clean_text)
+    if menu_reply:
+        return menu_reply
 
     add_history(phone, "user", clean_text)
     answer = ask_openai(phone, clean_text)
 
     if answer == "HANDOFF":
-        session["awaiting_area"] = True
-        return AREA_PROMPT
+        session["awaiting_outlet_handoff"] = True
+        return OUTLET_PROMPT
 
     add_history(phone, "assistant", answer)
     return answer
 
 
-def send_whatsapp_text(to_number: str, body_text: str) -> dict:
+def send_whatsapp_text(to_number: str, body_text: str):
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -396,6 +590,9 @@ def send_whatsapp_text(to_number: str, body_text: str) -> dict:
     }
 
     response = requests.post(url, headers=headers, json=payload, timeout=30)
+
+    print("Meta response status:", response.status_code)
+    print("Meta response body:", response.text)
 
     try:
         return response.json()
