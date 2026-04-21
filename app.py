@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from pathlib import Path
@@ -7,7 +8,6 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template_string, request
 from openai import OpenAI
-from pypdf import PdfReader
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env", override=False)
@@ -43,49 +43,15 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # ----------------------------
 # FILES
 # ----------------------------
-PDF_PATH = BASE_DIR / "data" / "jal_yoga_faq.pdf"
+KNOWLEDGE_PATH = BASE_DIR / "data" / "knowledge_base.json"
 
 # ----------------------------
 # MEMORY
 # ----------------------------
 SESSIONS = {}
 MAX_HISTORY = 8
-
-# ----------------------------
-# LOCAL RETRIEVAL SETTINGS
-# ----------------------------
-CHUNK_SIZE = 1200
-CHUNK_OVERLAP = 200
-TOP_K_CHUNKS = 5
-MIN_RETRIEVAL_SCORE = 5
-
-MENU_CONTEXT = {
-    "1": {
-        "name": "Schedule a Trial",
-        "query_prefix": "The user is asking under the Jal Yoga menu category: Schedule a Trial.",
-        "followup": "Sure — what would you like to know about booking a trial class?",
-    },
-    "2": {
-        "name": "I’m a current member",
-        "query_prefix": "The user is asking under the Jal Yoga menu category: Current Member Support.",
-        "followup": "Sure — what would you like help with as a current member?",
-    },
-    "3": {
-        "name": "I’d like to find out more about Jal Yoga",
-        "query_prefix": "The user is asking under the Jal Yoga menu category: General Enquiry.",
-        "followup": "Sure — what would you like to find out more about?",
-    },
-    "4": {
-        "name": "Corporate / Partnerships",
-        "query_prefix": "The user is asking under the Jal Yoga menu category: Corporate / Partnerships.",
-        "followup": "Sure — what would you like to know about corporate or partnership enquiries?",
-    },
-    "5": {
-        "name": "Staff Hub",
-        "query_prefix": "The user is asking under the Jal Yoga menu category: Staff Hub.",
-        "followup": "Sure — what would you like help with for Staff Hub?",
-    },
-}
+TOP_K = 4
+MIN_SCORE = 4
 
 WELCOME_MESSAGE = """Namaste! Thank you for reaching out to Jal Yoga. 🙏
 
@@ -100,7 +66,7 @@ You can also type your question directly.
 You can also type: human
 """
 
-OUTLET_PROMPT = """I’m unable to find that clearly in our Jal Yoga PDF information.
+OUTLET_PROMPT = """I’m unable to find that clearly in the Jal Yoga PDF knowledge.
 
 Please choose your preferred outlet and I’ll connect you there:
 
@@ -229,172 +195,16 @@ HOME_HTML = """
 """
 
 
-def normalize_spaces(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+def load_knowledge():
+    if not KNOWLEDGE_PATH.exists():
+        raise FileNotFoundError(f"Missing knowledge file: {KNOWLEDGE_PATH}")
+    with KNOWLEDGE_PATH.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP):
-    text = normalize_spaces(text)
-    if not text:
-        return []
-
-    chunks = []
-    start = 0
-    length = len(text)
-
-    while start < length:
-        end = min(start + chunk_size, length)
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-
-        if end >= length:
-            break
-
-        start = max(end - overlap, start + 1)
-
-    return chunks
-
-
-def load_pdf_chunks():
-    if not PDF_PATH.exists():
-        raise FileNotFoundError(f"Missing PDF file: {PDF_PATH}")
-
-    reader = PdfReader(str(PDF_PATH))
-    chunks = []
-
-    for page_num, page in enumerate(reader.pages, start=1):
-        raw_text = page.extract_text() or ""
-        raw_text = raw_text.strip()
-
-        if not raw_text:
-            continue
-
-        page_chunks = split_text(raw_text)
-
-        for idx, chunk in enumerate(page_chunks, start=1):
-            chunks.append(
-                {
-                    "page": page_num,
-                    "chunk_index": idx,
-                    "text": f"[Page {page_num}]\n{chunk}",
-                }
-            )
-
-    if not chunks:
-        raise ValueError("No readable text was extracted from the PDF.")
-
-    return chunks
-
-
-PDF_CHUNKS = load_pdf_chunks()
-
-
-def tokenize(text: str):
-    words = re.findall(r"[a-zA-Z0-9$]+", text.lower())
-    stopwords = {
-        "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "is", "are",
-        "i", "you", "me", "my", "we", "our", "your", "it", "this", "that", "with",
-        "what", "how", "can", "do", "does", "about", "please", "would", "like",
-        "tell", "more", "find", "out", "help", "need"
-    }
-    return [word for word in words if word not in stopwords]
-
-
-def score_chunk(search_text: str, chunk_text: str):
-    score = 0
-    query_tokens = tokenize(search_text)
-    chunk_lower = chunk_text.lower()
-    query_lower = search_text.lower()
-
-    for token in query_tokens:
-        if token in chunk_lower:
-            score += 3
-
-    phrase_boosts = [
-        "trial",
-        "schedule",
-        "trial class",
-        "current member",
-        "cancellation",
-        "cancel",
-        "suspension",
-        "medical",
-        "travel",
-        "class booking",
-        "refer a friend",
-        "location",
-        "locations",
-        "operating hours",
-        "class types",
-        "class schedule",
-        "studio policy",
-        "corporate",
-        "partnerships",
-        "staff hub",
-        "alexandra",
-        "katong",
-        "kovan",
-        "upper bukit timah",
-        "woodlands",
-    ]
-
-    for phrase in phrase_boosts:
-        if phrase in query_lower and phrase in chunk_lower:
-            score += 8
-
-    return score
-
-
-def retrieve_relevant_chunks(user_message: str, current_menu: str | None):
-    search_text = user_message.strip()
-
-    if current_menu in MENU_CONTEXT:
-        search_text = f"{MENU_CONTEXT[current_menu]['name']} {search_text}"
-
-    scored = []
-    for item in PDF_CHUNKS:
-        score = score_chunk(search_text, item["text"])
-        scored.append((score, item))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    best_score = scored[0][0] if scored else 0
-    chosen = [item for score, item in scored[:TOP_K_CHUNKS] if score > 0]
-
-    relevant_text = "\n\n---\n\n".join(chunk["text"] for chunk in chosen)
-    return relevant_text, best_score
-
-
-def build_system_prompt(relevant_knowledge: str) -> str:
-    return f"""
-You are Jal Yoga's WhatsApp assistant.
-
-You must answer ONLY from the PDF knowledge below.
-Do not invent facts.
-If the answer is not clearly supported by the knowledge below, reply with exactly:
-HANDOFF
-
-If the user asks for:
-- a human
-- an agent
-- customer service
-- a complaint
-- a refund
-- a difficult case
-reply with exactly:
-HANDOFF
-
-Style:
-- warm
-- simple English
-- concise
-- helpful
-- under 120 words when possible
-
-PDF KNOWLEDGE:
-{relevant_knowledge}
-""".strip()
+KNOWLEDGE = load_knowledge()
+SECTION_DOCS = KNOWLEDGE["sections"]
+MENU_CONTEXT = {item["id"]: item["label"] for item in KNOWLEDGE["menu"]}
 
 
 def normalize_number(number: str) -> str:
@@ -497,24 +307,113 @@ def handle_menu_selection(phone: str, text: str):
     if clean in MENU_CONTEXT:
         session = get_session(phone)
         session["current_menu"] = clean
-        return MENU_CONTEXT[clean]["followup"]
+        label = MENU_CONTEXT[clean]
+        return f"Got it — you selected {label}. Please type your question."
     return None
+
+
+def tokenize(text: str):
+    words = re.findall(r"[a-zA-Z0-9$]+", text.lower())
+    stopwords = {
+        "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "is", "are",
+        "i", "you", "me", "my", "we", "our", "your", "it", "this", "that", "with",
+        "what", "how", "can", "do", "does", "about", "please", "would", "like", "tell",
+        "find", "out", "help", "need", "know", "more"
+    }
+    return [word for word in words if word not in stopwords]
+
+
+def score_section(user_message: str, section: dict, current_menu: str | None):
+    query = user_message.lower().strip()
+    tokens = tokenize(query)
+    haystack = f"{section['title']} {' '.join(section.get('keywords', []))} {section['content']}".lower()
+
+    score = 0
+    for token in tokens:
+        if token in haystack:
+            score += 3
+
+    for keyword in section.get("keywords", []):
+        if keyword.lower() in query:
+            score += 5
+
+    if current_menu and section.get("category") == current_menu:
+        score += 10
+
+    if current_menu == "1" and any(x in query for x in ["trial", "studio", "fitness goal", "full name"]):
+        score += 5
+    if current_menu == "2" and any(x in query for x in ["cancel", "suspension", "booking", "member", "refer"]):
+        score += 5
+    if current_menu == "3" and any(x in query for x in ["location", "hours", "class", "schedule", "policy", "event", "retreat"]):
+        score += 5
+    if current_menu == "4" and any(x in query for x in ["corporate", "partnership", "company", "collaboration"]):
+        score += 5
+    if current_menu == "5" and any(x in query for x in ["staff", "room", "member name", "date", "time"]):
+        score += 5
+
+    return score
+
+
+def retrieve_sections(user_message: str, current_menu: str | None):
+    scored = []
+    for section in SECTION_DOCS:
+        scored.append((score_section(user_message, section, current_menu), section))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = [section for score, section in scored[:TOP_K] if score >= MIN_SCORE]
+    best = scored[0][0] if scored else 0
+    return top, best
+
+
+def build_grounding_context(user_message: str, current_menu: str | None):
+    sections, best_score = retrieve_sections(user_message, current_menu)
+    if not sections:
+        return "", 0
+
+    parts = []
+    for section in sections:
+        parts.append(f"[{section['title']}]\n{section['content']}")
+
+    return "\n\n---\n\n".join(parts), best_score
+
+
+def build_system_prompt(grounding_context: str) -> str:
+    menu_text = ", ".join(f"{k}. {v}" for k, v in MENU_CONTEXT.items())
+    outlets = ", ".join(outlet["name"] for outlet in KNOWLEDGE["outlets"])
+
+    return f"""
+You are Jal Yoga's WhatsApp assistant.
+
+Use ONLY the grounded Jal Yoga knowledge below.
+Do not invent facts.
+If the answer is not clearly supported by the grounded knowledge, reply with exactly:
+HANDOFF
+
+Important business rules:
+- The main menu options are: {menu_text}
+- The outlets mentioned in the PDF are: {outlets}
+- If the user asks something unsupported by the grounded knowledge, do not guess.
+- Keep replies warm, clear, and simple.
+- Keep replies under 120 words when possible.
+
+Grounded knowledge:
+{grounding_context}
+""".strip()
 
 
 def ask_openai(phone: str, user_message: str):
     session = get_session(phone)
     current_menu = session.get("current_menu")
+    grounding_context, best_score = build_grounding_context(user_message, current_menu)
 
-    relevant_knowledge, best_score = retrieve_relevant_chunks(user_message, current_menu)
-
-    if not relevant_knowledge or best_score < MIN_RETRIEVAL_SCORE:
+    if best_score < MIN_SCORE or not grounding_context:
         return "HANDOFF"
 
     recent_history = session["history"][-6:]
     lines = []
 
-    if current_menu in MENU_CONTEXT:
-        lines.append(MENU_CONTEXT[current_menu]["query_prefix"])
+    if current_menu:
+        lines.append(f"The current user-selected menu is: {MENU_CONTEXT[current_menu]}")
 
     for item in recent_history:
         role = item["role"].title()
@@ -526,7 +425,7 @@ def ask_openai(phone: str, user_message: str):
     try:
         response = client.responses.create(
             model=OPENAI_MODEL,
-            instructions=build_system_prompt(relevant_knowledge),
+            instructions=build_system_prompt(grounding_context),
             input=conversation_text,
         )
         answer = (response.output_text or "").strip()
