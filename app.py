@@ -400,7 +400,15 @@ def send_whatsapp_message(to: str, message: Union[str, Dict[str, Any]]) -> None:
     else:
         raise ValueError("Unsupported message kind")
 
+    print("SEND URL:", url)
+    print("SEND TO:", to)
+    print("SEND PAYLOAD:", json.dumps(payload, indent=2, ensure_ascii=False))
+
     response = requests.post(url, headers=headers, json=payload, timeout=30)
+
+    print("SEND STATUS:", response.status_code)
+    print("SEND RESPONSE:", response.text)
+
     response.raise_for_status()
 
 
