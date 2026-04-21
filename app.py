@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 from openai import OpenAI
 
 from knowledge import (
@@ -42,6 +42,9 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "jal_yoga_verify_token")
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v23.0")
 PORT = int(os.getenv("PORT", "5000"))
 
+PUBLIC_WHATSAPP_NUMBER = os.getenv("PUBLIC_WHATSAPP_NUMBER", "6590000001")
+SCHEDULE_URL = "https://www.jalyoga.com.sg/jal-schedule/"
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 USER_STATES: Dict[str, Dict[str, Any]] = {}
@@ -51,6 +54,39 @@ MAIN_MENU_STATE = {
     "step": "waiting_choice",
     "data": {},
 }
+
+STUDIO_DETAILS = [
+    {
+        "name": "Alexandra",
+        "address": "456 Alexandra Rd, #02-03, Singapore 119962",
+        "phone": STUDIO_CONTACTS["Alexandra"]["phone"],
+        "whatsapp_link": STUDIO_CONTACTS["Alexandra"]["whatsapp_link"],
+    },
+    {
+        "name": "Katong",
+        "address": "131 E Coast Rd, #03-01, Singapore 428816",
+        "phone": STUDIO_CONTACTS["Katong"]["phone"],
+        "whatsapp_link": STUDIO_CONTACTS["Katong"]["whatsapp_link"],
+    },
+    {
+        "name": "Kovan",
+        "address": "1F Yio Chu Kang Rd, Singapore 545512",
+        "phone": STUDIO_CONTACTS["Kovan"]["phone"],
+        "whatsapp_link": STUDIO_CONTACTS["Kovan"]["whatsapp_link"],
+    },
+    {
+        "name": "Upper Bukit Timah",
+        "address": "816 Upper Bukit Timah Road, Singapore 678149",
+        "phone": STUDIO_CONTACTS["Upper Bukit Timah"]["phone"],
+        "whatsapp_link": STUDIO_CONTACTS["Upper Bukit Timah"]["whatsapp_link"],
+    },
+    {
+        "name": "Woodlands",
+        "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713",
+        "phone": STUDIO_CONTACTS["Woodlands"]["phone"],
+        "whatsapp_link": STUDIO_CONTACTS["Woodlands"]["whatsapp_link"],
+    },
+]
 
 
 def normalize(text: str) -> str:
@@ -753,12 +789,12 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
         if step == "ask_member_name":
             data["member_name"] = raw_text or ""
             set_state(phone, "staff_hub", "ask_date_time", data)
-            return "Please share the Date & Time."
+            return "Please share the Member Name first."
 
         if step == "ask_date_time":
             data["date_time"] = raw_text or ""
             set_state(phone, "staff_hub", "ask_location_room", data)
-            return "Please share the Studio Location & Room."
+            return "Please share the Date & Time."
 
         if step == "ask_location_room":
             data["location_room"] = raw_text or ""
@@ -778,7 +814,17 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "ok", "message": "Jal Yoga WhatsApp bot is running."})
+    return render_template(
+        "index.html",
+        studios=STUDIO_DETAILS,
+        public_whatsapp_number=PUBLIC_WHATSAPP_NUMBER,
+        schedule_url=SCHEDULE_URL,
+    )
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "message": "Jal Yoga app is running."})
 
 
 @app.route("/webhook", methods=["GET"])

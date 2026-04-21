@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jal Yoga | WhatsApp Assistant</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header class="hero">
+    <nav class="nav container">
+      <div class="brand">Jal Yoga</div>
+      <div class="nav-links">
+        <a href="#services">Services</a>
+        <a href="#studios">Studios</a>
+        <a href="#contact">Contact</a>
+      </div>
+    </nav>
+
+    <div class="hero-content container">
+      <div class="hero-text">
+        <p class="tag">Yoga • Pilates • Barre • Wellness</p>
+        <h1>Your Jal Yoga WhatsApp Assistant</h1>
+        <p class="subtitle">
+          Book a trial, ask about memberships, view studio details, and get help quickly through WhatsApp.
+        </p>
+
+        <div class="hero-buttons">
+          <a class="btn btn-primary" href="https://wa.me/{{ public_whatsapp_number }}" target="_blank">
+            Chat on WhatsApp
+          </a>
+          <a class="btn btn-secondary" href="{{ schedule_url }}" target="_blank">
+            View Class Schedule
+          </a>
+        </div>
+      </div>
+
+      <div class="hero-card">
+        <h3>What the bot can help with</h3>
+        <ul>
+          <li>Schedule a Trial</li>
+          <li>Current Member Support</li>
+          <li>General Enquiries</li>
+          <li>Corporate / Partnerships</li>
+          <li>Staff Hub Requests</li>
+        </ul>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="services" class="section container">
+      <h2>Our Services</h2>
+      <div class="cards">
+        <div class="card">
+          <h3>Schedule a Trial</h3>
+          <p>Choose your studio, share your name and fitness goal, and our team will follow up.</p>
+        </div>
+
+        <div class="card">
+          <h3>Current Member</h3>
+          <p>Get help with class cancellation, suspension, bookings, and referrals.</p>
+        </div>
+
+        <div class="card">
+          <h3>General Enquiry</h3>
+          <p>Find studio locations, operating hours, class types, schedules, and policies.</p>
+        </div>
+
+        <div class="card">
+          <h3>Corporate & Partnerships</h3>
+          <p>Reach out to discuss collaborations and workplace wellness opportunities.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="studios" class="section light-section">
+      <div class="container">
+        <h2>Our Studios</h2>
+        <div class="cards">
+          {% for studio in studios %}
+          <div class="card">
+            <h3>{{ studio.name }}</h3>
+            <p>{{ studio.address }}</p>
+            <p><strong>Phone:</strong> {{ studio.phone }}</p>
+            <p><a class="studio-link" href="{{ studio.whatsapp_link }}" target="_blank">Open WhatsApp</a></p>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </section>
+
+    <section class="section container">
+      <h2>Operating Hours</h2>
+      <div class="hours-box">
+        <p><strong>Mon - Fri:</strong> 7:30 AM – 9:00 PM</p>
+        <p><strong>Sat - Sun:</strong> 9:30 AM – 5:00 PM</p>
+      </div>
+    </section>
+
+    <section id="contact" class="section cta-section">
+      <div class="container cta-box">
+        <h2>Need help now?</h2>
+        <p>Start a WhatsApp chat with Jal Yoga and get support faster.</p>
+        <a class="btn btn-primary" href="https://wa.me/{{ public_whatsapp_number }}" target="_blank">
+          Open WhatsApp
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>© 2026 Jal Yoga. All rights reserved.</p>
+    </div>
+  </footer>
+</body>
+</html>
