@@ -184,6 +184,35 @@ def is_menu_request(text: str) -> bool:
     }
 
 
+YES_WORDS = {
+    "yes",
+    "y",
+    "sure",
+    "ok",
+    "okay",
+    "okie",
+    "yes please",
+    "yep",
+    "yeah",
+    "please",
+}
+
+NO_WORDS = {
+    "no",
+    "n",
+    "nope",
+    "nah",
+}
+
+
+def is_yes(text: str) -> bool:
+    return normalize(text) in YES_WORDS
+
+
+def is_no(text: str) -> bool:
+    return normalize(text) in NO_WORDS
+
+
 def is_handoff_request(text: str) -> bool:
     t = normalize(text)
     keywords = [
@@ -285,6 +314,21 @@ def build_trial_studio_message() -> Dict[str, Any]:
     )
 
 
+def build_location_choice_message() -> Dict[str, Any]:
+    rows = []
+    for studio in STUDIOS:
+        row_id = "location_" + normalize(studio["name"]).replace(" ", "_")
+        rows.append((row_id, studio["name"], studio["address"]))
+
+    return build_list_message(
+        body="Sure! Which studio location would you like to view?",
+        button_text="Choose Location",
+        rows=rows,
+        section_title="Studio Locations",
+        footer="You can also type MENU anytime.",
+    )
+
+
 def build_member_menu_message() -> Dict[str, Any]:
     return build_list_message(
         body=(
@@ -367,6 +411,32 @@ def hours_text() -> str:
     return "\n".join(lines)
 
 
+def single_studio_text(studio_name: str) -> str:
+    for studio in STUDIOS:
+        if normalize(studio["name"]) == normalize(studio_name):
+            return (
+                f"Studio: {studio['name']}\n"
+                f"Address: {studio['address']}\n\n"
+                "Reply MENU to return to the main menu."
+            )
+
+    return (
+        "I’m sorry — I’m not fully sure based on the information I have. "
+        "I’ll pass this to our Customer Service team."
+    )
+
+
+def wants_location_followup(answer: str) -> bool:
+    t = normalize(answer)
+    phrases = [
+        "would you also like the studio locations",
+        "would you like the studio locations",
+        "would you also like studio locations",
+        "would you like studio locations",
+    ]
+    return any(p in t for p in phrases)
+
+
 def ask_llm(question: str) -> str:
     if not OPENAI_API_KEY:
         return (
@@ -385,6 +455,7 @@ Rules:
 5. If the user wants a real human, or the issue is complaint, refund, payment, account-specific, manual review, or you are unsure, hand off to customer service.
 6. If the answer is not clearly in the knowledge, reply exactly:
 I’m sorry — I’m not fully sure based on the information I have. I’ll pass this to our Customer Service team.
+7. Only ask a yes/no follow-up if it is exactly: Would you also like the studio locations?
 
 KNOWLEDGE:
 {KNOWLEDGE_TEXT}
@@ -416,6 +487,13 @@ def maybe_escalate_after_llm(phone: str, user_text: str, answer: str) -> None:
                 "llm_answer": answer,
             },
         )
+
+
+def maybe_set_location_followup(phone: str, answer: str) -> bool:
+    if wants_location_followup(answer):
+        set_state(phone, "follow_up_locations", "wait_yes_no", {})
+        return True
+    return False
 
 
 def send_whatsapp_message(to: str, message: Union[str, Dict[str, Any]]) -> None:
@@ -604,6 +682,37 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
     step = state["step"]
     data = state["data"]
 
+    if flow == "follow_up_locations" and step == "wait_yes_no":
+        if is_yes(raw_text or ""):
+            set_state(phone, "follow_up_locations", "choose_location", {})
+            return build_location_choice_message()
+
+        if is_no(raw_text or ""):
+            reset_user(phone)
+            return "No problem. Reply MENU anytime if you'd like anything else."
+
+        return "Please reply YES or NO."
+
+    if flow == "follow_up_locations" and step == "choose_location":
+        studio_map = {
+            "location_" + normalize(studio["name"]).replace(" ", "_"): studio["name"]
+            for studio in STUDIOS
+        }
+
+        studio_name = studio_map.get(reply_id)
+
+        if not studio_name and raw_text:
+            for studio in STUDIOS:
+                if normalize(raw_text) == normalize(studio["name"]):
+                    studio_name = studio["name"]
+                    break
+
+        if not studio_name:
+            return build_location_choice_message()
+
+        reset_user(phone)
+        return single_studio_text(studio_name)
+
     if flow == "main_menu" and step == "waiting_choice":
         if reply_id == "menu_trial" or t in {
             "1",
@@ -656,6 +765,10 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
 
         answer = ask_llm(raw_text or "")
         maybe_escalate_after_llm(phone, raw_text or "", answer)
+
+        if maybe_set_location_followup(phone, answer):
+            return answer
+
         return answer
 
     if flow == "trial":
@@ -708,6 +821,10 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
                 "Explain the class cancellation policy in a short WhatsApp reply."
             )
             maybe_escalate_after_llm(phone, raw_text or "", answer)
+
+            if maybe_set_location_followup(phone, answer):
+                return answer
+
             reset_user(phone)
             return answer + "\n\nReply MENU to return to the main menu."
 
@@ -824,6 +941,10 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
                 "Summarize the booking, cancellation, and suspension policies in a short WhatsApp reply."
             )
             maybe_escalate_after_llm(phone, raw_text or "", answer)
+
+            if maybe_set_location_followup(phone, answer):
+                return answer
+
             reset_user(phone)
             return answer + "\n\nReply MENU to return to the main menu."
 
@@ -833,12 +954,20 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
 
         answer = ask_llm(raw_text or "")
         maybe_escalate_after_llm(phone, raw_text or "", answer)
+
+        if maybe_set_location_followup(phone, answer):
+            return answer
+
         reset_user(phone)
         return answer + "\n\nReply MENU to return to the main menu."
 
     if flow == "general_question" and step == "ask_question":
         answer = ask_llm(raw_text or "")
         maybe_escalate_after_llm(phone, raw_text or "", answer)
+
+        if maybe_set_location_followup(phone, answer):
+            return answer
+
         reset_user(phone)
         return answer + "\n\nReply MENU to return to the main menu."
 
@@ -891,6 +1020,10 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
 
     answer = ask_llm(raw_text or "")
     maybe_escalate_after_llm(phone, raw_text or "", answer)
+
+    if maybe_set_location_followup(phone, answer):
+        return answer
+
     reset_user(phone)
     return answer + "\n\nReply MENU to return to the main menu."
 
