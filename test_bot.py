@@ -4,29 +4,23 @@ from app import build_bot_reply
 PHONE = "LOCAL_TEST"
 
 
-def bubble_left(text: str):
-    print()
-    print("┌─ Jal Yoga Bot " + "─" * 42)
-    for line in text.splitlines():
-        print("│ " + line)
-    print("└" + "─" * 56)
-    print()
+def print_divider():
+    print("-" * 60)
 
 
-def bubble_right(text: str):
+def print_bot(reply: str):
     print()
-    print(" " * 20 + "You")
-    for line in text.splitlines():
-        print(" " * 20 + line)
-    print()
+    print("Jal Yoga Bot:")
+    print(reply)
+    print_divider()
 
 
 def main():
-    print("=" * 60)
-    print("Jal Yoga WhatsApp Bot Local Tester")
+    print_divider()
+    print("Jal Yoga Local Test Bot")
     print("Type 'exit' or 'quit' to stop")
-    print("Type 'menu' to restart")
-    print("=" * 60)
+    print("Type 'menu' anytime to restart the conversation")
+    print_divider()
 
     while True:
         user_text = input("You: ").strip()
@@ -40,13 +34,13 @@ def main():
             break
 
         try:
-            bubble_right(user_text)
             reply = build_bot_reply(PHONE, user_text)
-            bubble_left(reply)
+            print_bot(reply)
         except Exception as e:
             print()
-            print("Error:", str(e))
-            print()
+            print("Error:")
+            print(str(e))
+            print_divider()
 
 
 if __name__ == "__main__":

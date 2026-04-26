@@ -2,6 +2,7 @@ import json
 import os
 import re
 from datetime import datetime
+from difflib import get_close_matches
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -42,13 +43,13 @@ KNOWLEDGE_TEXT = load_knowledge_text()
 
 
 def extract_section(title: str, text: str) -> str:
-    pattern = rf"(?ms)^{re.escape(title)}\s*\n(.*?)(?=^[A-Z][A-Z /&()'-]+$|\Z)"
+    pattern = rf"(?ms)^{re.escape(title)}\s*\n(.*?)(?=^[A-Z][A-Z /&()'\-]+$|\Z)"
     match = re.search(pattern, text)
     return match.group(1).strip() if match else ""
 
 
 def extract_bullets(section_text: str) -> List[str]:
-    items = []
+    items: List[str] = []
     for line in section_text.splitlines():
         line = line.strip()
         if line.startswith("- "):
@@ -58,7 +59,7 @@ def extract_bullets(section_text: str) -> List[str]:
 
 def parse_studios(text: str) -> List[Dict[str, str]]:
     section = extract_section("STUDIOS", text)
-    studios = []
+    studios: List[Dict[str, str]] = []
     for item in extract_bullets(section):
         if ":" in item:
             name, address = item.split(":", 1)
@@ -82,9 +83,98 @@ if not STUDIOS:
         {"name": "Woodlands", "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713"},
     ]
 
+KNOWN_STUDIOS = [studio["name"] for studio in STUDIOS]
+
+KNOWN_INTENTS: Dict[str, List[str]] = {
+    "trial": [
+        "trial",
+        "free trial",
+        "trial lesson",
+        "trial class",
+        "book trial",
+        "schedule trial",
+        "try class",
+        "first time class",
+    ],
+    "suspension": [
+        "suspension",
+        "suspend membership",
+        "pause membership",
+        "freeze membership",
+        "stop membership",
+        "travel suspension",
+        "medical suspension",
+    ],
+    "cancellation": [
+        "cancel class",
+        "class cancellation",
+        "cancel booking",
+        "late cancellation",
+    ],
+    "booking_help": [
+        "booking help",
+        "cannot book",
+        "cant book",
+        "can't book",
+        "booking issue",
+        "class booking",
+    ],
+    "refer_friend": [
+        "refer friend",
+        "refer a friend",
+        "friend referral",
+    ],
+    "corporate": [
+        "corporate",
+        "partnership",
+        "corporate partnership",
+        "corporate collab",
+    ],
+    "staff_hub": [
+        "staff hub",
+        "staff booking",
+    ],
+    "locations": [
+        "location",
+        "locations",
+        "address",
+        "addresses",
+        "studio",
+        "studios",
+        "outlet",
+        "outlets",
+        "where is",
+    ],
+    "hours": [
+        "hours",
+        "opening hours",
+        "operating hours",
+        "what time open",
+        "what time close",
+    ],
+}
+
+STOP_WORDS = {
+    "is", "was", "are", "am", "be", "been",
+    "do", "does", "did",
+    "can", "could", "will", "would", "should",
+    "a", "an", "the",
+    "to", "for", "of", "in", "on", "at",
+    "i", "you", "me", "my", "your", "our",
+    "what", "where", "when", "how", "why",
+    "please", "pls", "pls.",
+    "ah", "lah", "leh", "anot",
+    "tell", "say", "know",
+}
+
 
 def normalize(text: str) -> str:
     return " ".join((text or "").strip().lower().replace("’", "'").split())
+
+
+def extract_important_words(text: str) -> List[str]:
+    words = normalize(text).split()
+    return [word for word in words if word not in STOP_WORDS]
 
 
 def now_singapore_iso() -> str:
@@ -166,7 +256,104 @@ def strip_handoff_token(text: str) -> str:
     return text.replace("[HANDOFF]", "").strip()
 
 
-def ask_llm(phone: str, user_text: str) -> str:
+def best_fuzzy_match(text: str, choices: List[str], cutoff: float = 0.72) -> Optional[str]:
+    matches = get_close_matches(text.lower(), [c.lower() for c in choices], n=1, cutoff=cutoff)
+    if not matches:
+        return None
+
+    matched_lower = matches[0]
+    for choice in choices:
+        if choice.lower() == matched_lower:
+            return choice
+    return None
+
+
+def detect_studio_from_text(text: str) -> Tuple[Optional[str], float]:
+    t = normalize(text)
+
+    for studio in KNOWN_STUDIOS:
+        if studio.lower() in t:
+            return studio, 1.0
+
+    important_words = extract_important_words(t)
+    candidates: List[str] = [t]
+    candidates.extend(important_words)
+
+    best: Optional[str] = None
+    best_score = 0.0
+
+    for candidate in candidates:
+        match = get_close_matches(candidate, [s.lower() for s in KNOWN_STUDIOS], n=1, cutoff=0.6)
+        if match:
+            matched = match[0]
+
+            if candidate == matched:
+                score = 1.0
+            elif len(candidate) >= 4:
+                score = 0.82
+            else:
+                score = 0.70
+
+            for studio in KNOWN_STUDIOS:
+                if studio.lower() == matched and score > best_score:
+                    best = studio
+                    best_score = score
+
+    return best, best_score
+
+
+def detect_intent_from_text(text: str) -> Tuple[Optional[str], float]:
+    t = normalize(text)
+
+    for intent, phrases in KNOWN_INTENTS.items():
+        for phrase in phrases:
+            if phrase in t:
+                return intent, 1.0
+
+    important_words = extract_important_words(t)
+    filtered_text = " ".join(important_words)
+
+    all_phrases: List[str] = []
+    phrase_to_intent: Dict[str, str] = {}
+
+    for intent, phrases in KNOWN_INTENTS.items():
+        for phrase in phrases:
+            all_phrases.append(phrase)
+            phrase_to_intent[phrase] = intent
+
+    if filtered_text:
+        match = best_fuzzy_match(filtered_text, all_phrases, cutoff=0.58)
+        if match:
+            return phrase_to_intent[match], 0.78
+
+    for word in important_words:
+        match = best_fuzzy_match(word, all_phrases, cutoff=0.72)
+        if match:
+            return phrase_to_intent[match], 0.72
+
+    return None, 0.0
+
+
+def enrich_user_text_for_llm(text: str) -> str:
+    original = text or ""
+    studio, studio_score = detect_studio_from_text(original)
+    intent, intent_score = detect_intent_from_text(original)
+
+    hints: List[str] = []
+
+    if studio and studio_score >= 0.8:
+        hints.append(f"Detected studio: {studio}")
+
+    if intent and intent_score >= 0.75:
+        hints.append(f"Detected intent: {intent}")
+
+    if not hints:
+        return original
+
+    return original + "\n\nSYSTEM HINTS:\n" + "\n".join(f"- {h}" for h in hints)
+
+
+def ask_llm(phone: str, user_text: str, history_user_text: Optional[str] = None) -> str:
     if not OPENAI_API_KEY:
         return (
             "I’m sorry — the AI answer service is not configured yet.\n"
@@ -205,6 +392,11 @@ Important behavior rules:
   - if the user needs manual help, missed the timing, or has an app/account issue, use [HANDOFF]
 - If the user gives multiple needed details in one message, use them and continue to the next missing step.
 - Do not restart a flow unless the user says MENU, START, HOME, MAIN MENU, or RESTART.
+- Understand common typos, casual phrasing, short forms, and Singapore-style phrasing.
+- Use any SYSTEM HINTS if provided, but only if they make sense with the user's message.
+- If a likely studio name is unclear, ask for confirmation briefly instead of guessing.
+- If the user message contains typos but the meaning is still clear, answer the intended meaning naturally.
+- If the user message is unclear but close to a known Jal Yoga topic, ask a short clarification question instead of guessing wrongly.
 
 Conversation behavior:
 - If the user asks for the menu, show the Jal Yoga main menu from the knowledge.
@@ -244,7 +436,7 @@ RECENT CHAT:
         )
 
     clean_answer = strip_handoff_token(answer)
-    add_history(phone, "user", user_text)
+    add_history(phone, "user", history_user_text or user_text)
     add_history(phone, "assistant", clean_answer)
 
     return answer
@@ -355,16 +547,23 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
             "Please type your message, or type CUSTOMER SERVICE for manual help."
         )
 
-    if is_menu_request(raw_text or ""):
+    clean_text = raw_text or ""
+    enriched_text = enrich_user_text_for_llm(clean_text)
+
+    if is_menu_request(clean_text):
         reset_history(phone)
-        answer = ask_llm(phone, "Show the Jal Yoga main menu exactly as written in the knowledge.")
+        answer = ask_llm(
+            phone,
+            "Show the Jal Yoga main menu exactly as written in the knowledge.",
+            history_user_text=clean_text,
+        )
         return strip_handoff_token(answer)
 
-    if is_handoff_request(raw_text or ""):
+    if is_handoff_request(clean_text):
         save_request(
             "customer_service_handoff",
             phone,
-            {"user_message": raw_text or ""},
+            {"user_message": clean_text},
         )
         reset_history(phone)
         return (
@@ -372,7 +571,11 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
             "Our Customer Service team will review your message and get back to you as soon as possible."
         )
 
-    answer = ask_llm(phone, raw_text or "")
+    answer = ask_llm(
+        phone,
+        enriched_text,
+        history_user_text=clean_text,
+    )
 
     if "[HANDOFF]" in answer:
         clean_answer = strip_handoff_token(answer)
@@ -380,7 +583,7 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
             "customer_service_handoff",
             phone,
             {
-                "user_message": raw_text or "",
+                "user_message": clean_text,
                 "llm_answer": clean_answer,
             },
         )
