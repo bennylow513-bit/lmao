@@ -33,8 +33,8 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 USER_ACTIVITY: Dict[str, Dict[str, Any]] = {}
 
-INACTIVITY_SECONDS = 30  # 10 minutes
-INACTIVITY_CHECK_INTERVAL = 300  # check every 5 minute
+INACTIVITY_SECONDS = 600  # change to 30 for testing
+INACTIVITY_CHECK_INTERVAL = 30
 INACTIVITY_MESSAGE = (
     "Hey, are you still there? 😊\n\n"
     "If you still need help, just reply here and I’ll continue."
@@ -485,7 +485,7 @@ def send_whatsapp_message(to: str, message: str) -> None:
     response.raise_for_status()
 
 
-def inactivity_monitor() -> None:
+def inactivity_monitor(test_mode: bool = False, reminder_queue=None) -> None:
     while True:
         time.sleep(INACTIVITY_CHECK_INTERVAL)
         now = time.time()
@@ -496,7 +496,11 @@ def inactivity_monitor() -> None:
 
             if not reminder_sent and (now - last_seen) >= INACTIVITY_SECONDS:
                 try:
-                    send_whatsapp_message(phone, INACTIVITY_MESSAGE)
+                    if test_mode and reminder_queue is not None and phone == "LOCAL_TEST":
+                        reminder_queue.put(INACTIVITY_MESSAGE)
+                    else:
+                        send_whatsapp_message(phone, INACTIVITY_MESSAGE)
+
                     USER_ACTIVITY[phone]["reminder_sent"] = True
 
                     save_request(
@@ -505,6 +509,7 @@ def inactivity_monitor() -> None:
                         {
                             "message": INACTIVITY_MESSAGE,
                             "sent_at": now_singapore_iso(),
+                            "test_mode": test_mode,
                         },
                     )
                 except Exception as e:
@@ -514,15 +519,23 @@ def inactivity_monitor() -> None:
                         {
                             "error": str(e),
                             "sent_at": now_singapore_iso(),
+                            "test_mode": test_mode,
                         },
                     )
 
 
-def start_inactivity_thread() -> None:
+def start_inactivity_thread(test_mode: bool = False, reminder_queue=None) -> None:
     if getattr(app, "_inactivity_thread_started", False):
         return
 
-    thread = threading.Thread(target=inactivity_monitor, daemon=True)
+    thread = threading.Thread(
+        target=inactivity_monitor,
+        kwargs={
+            "test_mode": test_mode,
+            "reminder_queue": reminder_queue,
+        },
+        daemon=True,
+    )
     thread.start()
     app._inactivity_thread_started = True
 
