@@ -7,3 +7,5 @@
 {"kind": "corporate_partnership", "phone": "LOCAL_TEST", "payload": {"name": "ienfnfe", "email": "BEnebuib@gmial.com", "company": "ninienef"}, "created_at_sg": "2026-04-23T12:41:40.551268+08:00"}
 {"kind": "llm_handoff", "phone": "LOCAL_TEST", "payload": {"user_message": "MANU", "llm_answer": "I’m sorry — I’m not fully sure based on the information I have. I’ll pass this to our Customer Service team."}, "created_at_sg": "2026-04-23T12:41:57.892029+08:00"}
 {"kind": "customer_service_handoff", "phone": "LOCAL_TEST", "payload": {"user_message": "Staff Hub", "state": {"flow": "main_menu", "step": "waiting_choice", "data": {}}}, "created_at_sg": "2026-04-23T12:43:45.972503+08:00"}
+{"kind": "customer_service_handoff", "phone": "LOCAL_TEST", "payload": {"user_message": "Staff hub", "state": {"flow": "main_menu", "step": "waiting_choice", "data": {}}}, "created_at_sg": "2026-04-23T13:43:36.133183+08:00"}
+{"kind": "trial_booking", "phone": "LOCAL_TEST", "payload": {"studio": "Katong", "name": "ben", "fitness_goal": "10kg"}, "created_at_sg": "2026-04-23T13:45:09.552636+08:00"}
