@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import threading
+import time
 from datetime import datetime
 from difflib import get_close_matches
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +31,14 @@ PUBLIC_WHATSAPP_NUMBER = os.getenv("PUBLIC_WHATSAPP_NUMBER", "")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
+USER_ACTIVITY: Dict[str, Dict[str, Any]] = {}
+
+INACTIVITY_SECONDS = 600  # 10 minutes
+INACTIVITY_CHECK_INTERVAL = 30  # check every 30 seconds
+INACTIVITY_MESSAGE = (
+    "Hey, are you still there? 😊\n\n"
+    "If you still need help, just reply here and I’ll continue."
+)
 
 
 def load_knowledge_text() -> str:
@@ -216,44 +226,11 @@ def add_history(phone: str, role: str, content: str) -> None:
     CHAT_HISTORY[phone] = CHAT_HISTORY[phone][-14:]
 
 
-def is_menu_request(text: str) -> bool:
-    return normalize(text) in {
-        "menu",
-        "start",
-        "home",
-        "main menu",
-        "restart",
-        "hi",
-        "hello",
-        "hey",
+def mark_user_active(phone: str) -> None:
+    USER_ACTIVITY[phone] = {
+        "last_seen": time.time(),
+        "reminder_sent": False,
     }
-
-
-def is_handoff_request(text: str) -> bool:
-    t = normalize(text)
-    keywords = [
-        "customer service",
-        "agent",
-        "human",
-        "staff",
-        "representative",
-        "speak to someone",
-        "speak to a person",
-        "complaint",
-        "refund",
-        "payment",
-        "account",
-        "manual review",
-        "billing issue",
-        "billing",
-        "login issue",
-        "login problem",
-    ]
-    return any(k in t for k in keywords)
-
-
-def strip_handoff_token(text: str) -> str:
-    return text.replace("[HANDOFF]", "").strip()
 
 
 def best_fuzzy_match(text: str, choices: List[str], cutoff: float = 0.72) -> Optional[str]:
@@ -351,6 +328,46 @@ def enrich_user_text_for_llm(text: str) -> str:
         return original
 
     return original + "\n\nSYSTEM HINTS:\n" + "\n".join(f"- {h}" for h in hints)
+
+
+def is_menu_request(text: str) -> bool:
+    return normalize(text) in {
+        "menu",
+        "start",
+        "home",
+        "main menu",
+        "restart",
+        "hi",
+        "hello",
+        "hey",
+    }
+
+
+def is_handoff_request(text: str) -> bool:
+    t = normalize(text)
+    keywords = [
+        "customer service",
+        "agent",
+        "human",
+        "staff",
+        "representative",
+        "speak to someone",
+        "speak to a person",
+        "complaint",
+        "refund",
+        "payment",
+        "account",
+        "manual review",
+        "billing issue",
+        "billing",
+        "login issue",
+        "login problem",
+    ]
+    return any(k in t for k in keywords)
+
+
+def strip_handoff_token(text: str) -> str:
+    return text.replace("[HANDOFF]", "").strip()
 
 
 def ask_llm(phone: str, user_text: str, history_user_text: Optional[str] = None) -> str:
@@ -468,6 +485,48 @@ def send_whatsapp_message(to: str, message: str) -> None:
     response.raise_for_status()
 
 
+def inactivity_monitor() -> None:
+    while True:
+        time.sleep(INACTIVITY_CHECK_INTERVAL)
+        now = time.time()
+
+        for phone, state in list(USER_ACTIVITY.items()):
+            last_seen = state.get("last_seen", now)
+            reminder_sent = state.get("reminder_sent", False)
+
+            if not reminder_sent and (now - last_seen) >= INACTIVITY_SECONDS:
+                try:
+                    send_whatsapp_message(phone, INACTIVITY_MESSAGE)
+                    USER_ACTIVITY[phone]["reminder_sent"] = True
+
+                    save_request(
+                        "inactive_followup_sent",
+                        phone,
+                        {
+                            "message": INACTIVITY_MESSAGE,
+                            "sent_at": now_singapore_iso(),
+                        },
+                    )
+                except Exception as e:
+                    save_request(
+                        "inactive_followup_error",
+                        phone,
+                        {
+                            "error": str(e),
+                            "sent_at": now_singapore_iso(),
+                        },
+                    )
+
+
+def start_inactivity_thread() -> None:
+    if getattr(app, "_inactivity_thread_started", False):
+        return
+
+    thread = threading.Thread(target=inactivity_monitor, daemon=True)
+    thread.start()
+    app._inactivity_thread_started = True
+
+
 def extract_incoming_message(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     try:
         entry = payload.get("entry", [])
@@ -541,6 +600,9 @@ def unpack_user_input(incoming: Optional[Dict[str, Any]]) -> Tuple[Optional[str]
 def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
     raw_text, _, _ = unpack_user_input(incoming)
 
+    if incoming is not None and phone:
+        mark_user_active(phone)
+
     if incoming is None:
         return (
             "I can currently handle text messages only.\n"
@@ -606,6 +668,7 @@ def build_bot_reply(phone: str, user_text: str) -> str:
 
 @app.route("/", methods=["GET"])
 def home():
+    start_inactivity_thread()
     return render_template(
         "index.html",
         studios=STUDIOS,
@@ -620,6 +683,8 @@ def health():
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
+    start_inactivity_thread()
+
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -632,6 +697,8 @@ def verify_webhook():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    start_inactivity_thread()
+
     payload = request.get_json(silent=True) or {}
     phone, incoming = extract_incoming_message(payload)
 
@@ -664,4 +731,5 @@ def webhook():
 
 
 if __name__ == "__main__":
+    start_inactivity_thread()
     app.run(host="0.0.0.0", port=PORT, debug=True)
