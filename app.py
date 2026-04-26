@@ -33,7 +33,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 USER_ACTIVITY: Dict[str, Dict[str, Any]] = {}
 
-INACTIVITY_SECONDS = 600  # change to 30 for testing
+INACTIVITY_SECONDS = 30  # change to 30 for testing
 INACTIVITY_CHECK_INTERVAL = 30
 INACTIVITY_MESSAGE = (
     "Hey, are you still there? 😊\n\n"
