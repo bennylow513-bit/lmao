@@ -114,6 +114,30 @@ if not TRIAL_STUDIOS:
         "Woodlands",
     ]
 
+if not STUDIOS:
+    STUDIOS = [
+        {
+            "name": "Alexandra",
+            "address": "456 Alexandra Rd, #02-03, Singapore 119962",
+        },
+        {
+            "name": "Katong",
+            "address": "131 E Coast Rd, #03-01, Singapore 428816",
+        },
+        {
+            "name": "Kovan",
+            "address": "1F Yio Chu Kang Rd, Singapore 545512",
+        },
+        {
+            "name": "Upper Bukit Timah",
+            "address": "816 Upper Bukit Timah Road, Singapore 678149",
+        },
+        {
+            "name": "Woodlands",
+            "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713",
+        },
+    ]
+
 
 def normalize(text: str) -> str:
     return " ".join((text or "").strip().lower().replace("’", "'").split())
