@@ -2,7 +2,7 @@ import json
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import requests
@@ -42,7 +42,7 @@ KNOWLEDGE_TEXT = load_knowledge_text()
 
 
 def extract_section(title: str, text: str) -> str:
-    pattern = rf"(?ms)^{re.escape(title)}:\s*\n(.*?)(?=^[A-Za-z][^\n]*:\s*$|\Z)"
+    pattern = rf"(?ms)^{re.escape(title)}\s*\n(.*?)(?=^[A-Z][A-Z /&()'-]+$|\Z)"
     match = re.search(pattern, text)
     return match.group(1).strip() if match else ""
 
@@ -57,7 +57,7 @@ def extract_bullets(section_text: str) -> List[str]:
 
 
 def parse_studios(text: str) -> List[Dict[str, str]]:
-    section = extract_section("Studios", text)
+    section = extract_section("STUDIOS", text)
     studios = []
     for item in extract_bullets(section):
         if ":" in item:
@@ -75,26 +75,11 @@ STUDIOS = parse_studios(KNOWLEDGE_TEXT)
 
 if not STUDIOS:
     STUDIOS = [
-        {
-            "name": "Alexandra",
-            "address": "456 Alexandra Rd, #02-03, Singapore 119962",
-        },
-        {
-            "name": "Katong",
-            "address": "131 E Coast Rd, #03-01, Singapore 428816",
-        },
-        {
-            "name": "Kovan",
-            "address": "1F Yio Chu Kang Rd, Singapore 545512",
-        },
-        {
-            "name": "Upper Bukit Timah",
-            "address": "816 Upper Bukit Timah Road, Singapore 678149",
-        },
-        {
-            "name": "Woodlands",
-            "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713",
-        },
+        {"name": "Alexandra", "address": "456 Alexandra Rd, #02-03, Singapore 119962"},
+        {"name": "Katong", "address": "131 E Coast Rd, #03-01, Singapore 428816"},
+        {"name": "Kovan", "address": "1F Yio Chu Kang Rd, Singapore 545512"},
+        {"name": "Upper Bukit Timah", "address": "816 Upper Bukit Timah Road, Singapore 678149"},
+        {"name": "Woodlands", "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713"},
     ]
 
 
@@ -110,14 +95,12 @@ def closing_message() -> str:
     now_hour = datetime.now(ZoneInfo("Asia/Singapore")).hour
     if 7 <= now_hour < 18:
         return (
-            "Is there anything else we can assist you with today?\n"
-            "If not, we’ll close this ticket in a moment. "
-            "Wishing you a wonderful and mindful day ahead! 🙏"
+            "Is there anything else we can assist you with today?\n\n"
+            "If not, we’ll close this ticket in a moment. Wishing you a wonderful and mindful day ahead! 🙏"
         )
     return (
-        "Is there anything else we can assist you with today?\n"
-        "If not, we’ll close this ticket for now. "
-        "Wishing you a restful and peaceful evening ahead! ✨"
+        "Is there anything else we can assist you with today?\n\n"
+        "If not, we’ll close this ticket for now. Wishing you a restful and peaceful evening ahead! ✨"
     )
 
 
@@ -196,56 +179,35 @@ You are Jal Yoga Singapore's WhatsApp assistant.
 
 Use ONLY the knowledge below.
 
-Main behavior:
-- Handle as much of the conversation as possible through natural replies.
+Core behavior:
+- Handle as much of the conversation as possible naturally.
 - Ask one question at a time.
-- Continue multi-step flows based on the recent chat context.
+- Continue multi-step flows based on recent chat context.
 - Keep replies concise, warm, and professional.
-- Do not invent prices, class schedules, trainers, promotions, phone numbers, or any facts not shown in the knowledge.
-- If the answer is not clearly in the knowledge, or the issue is complaint, refund, payment, account-specific, manual review, or the user wants a real human, include exactly this token on a new line:
+- Do not invent prices, schedules, trainers, promotions, phone numbers, or any facts not shown in the knowledge.
+- If the answer is not clearly in the knowledge, or the issue is complaint, refund, payment, account-specific, billing-specific, login-specific, manual review, or the user wants a real human, include exactly this token on a new line:
 [HANDOFF]
 
-Flow behavior:
-- If the user wants a trial, follow this sequence:
-  1. Ask which studio they want to visit.
-  2. Ask for full name.
-  3. Ask for fitness goal.
-  4. Then give a short summary in this exact structure:
-     Outlet: <studio>
-     Class: Trial Class
-     Name: <name>
-     Fitness Goal: <fitness goal>
-  5. Also say the Studio Manager will contact them within 24 hours.
-  6. End completed flows with this exact closing message:
-     {closing_message()}
-
+Conversation rules:
+- If the user asks for the menu, show the Jal Yoga main menu from the knowledge.
+- If the user asks about a trial, free trial, trial class, or trial lesson, follow the trial flow in the knowledge.
+- If the user gives multiple needed details in one message, use them and continue to the next missing step.
 - If the user asks about studios, outlets, locations, or addresses:
   - If one studio is named, give that studio's address directly.
-  - If they ask for all studios/outlets, list all studios with addresses.
+  - If they ask for all studios or outlets, list all studios with addresses.
   - If they ask about location but do not specify which studio, ask which studio they mean.
-
-- If the user asks about operating hours, answer from the knowledge.
-
-- If the user is a current member:
-  - Help using the knowledge for class cancellation, membership suspension, booking help, and refer-a-friend.
-  - For issues that require manual review, use [HANDOFF].
-
-- If the user asks about corporate/partnerships:
-  1. Ask for full name.
-  2. Ask for work email.
-  3. Ask for optional company name.
-  4. Then summarize and say the Partnerships Team will review and get back via email.
-
-- If the user asks about staff hub:
-  1. Ask for member name.
-  2. Ask for date & time.
-  3. Ask for studio location & room.
-  4. Then summarize and say the booking request has been sent to the studio.
-
-- If the user asks for the main menu, show the numbered Jal Yoga menu from the knowledge.
+- If the user asks about operating hours, answer directly from the knowledge.
+- If the user is a current member, help using the knowledge for cancellation, suspension, booking help, and refer-a-friend.
+- If the user asks about corporate or partnerships, follow the corporate flow in the knowledge.
+- If the user asks about staff hub, follow the staff hub flow in the knowledge.
+- When a flow is completed, use the appropriate closing style shown in the knowledge.
+- Do not restart the flow unless the user asks for MENU, START, or MAIN MENU.
 
 KNOWLEDGE:
 {KNOWLEDGE_TEXT}
+
+CURRENT TIME IN SINGAPORE:
+{now_singapore_iso()}
 
 RECENT CHAT:
 {history_text}
@@ -273,23 +235,18 @@ RECENT CHAT:
     return answer
 
 
-def send_whatsapp_message(to: str, message: Union[str, Dict[str, Any]]) -> None:
+def send_whatsapp_message(to: str, message: str) -> None:
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
     }
 
-    if isinstance(message, dict):
-        body = json.dumps(message, ensure_ascii=False)
-    else:
-        body = message
-
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "text",
-        "text": {"body": body},
+        "text": {"body": message},
     }
 
     print("SEND URL:", url)
@@ -385,14 +342,14 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
 
     if is_menu_request(raw_text or ""):
         reset_history(phone)
-        answer = ask_llm(phone, "Show the Jal Yoga main menu with numbered options.")
+        answer = ask_llm(phone, "Show the Jal Yoga main menu exactly as written in the knowledge.")
         return strip_handoff_token(answer)
 
     if is_handoff_request(raw_text or ""):
         save_request(
             "customer_service_handoff",
             phone,
-            {"user_message": raw_text or ""}
+            {"user_message": raw_text or ""},
         )
         reset_history(phone)
         return (

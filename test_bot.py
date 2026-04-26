@@ -4,55 +4,50 @@ from app import build_bot_reply
 PHONE = "LOCAL_TEST"
 
 
-def print_reply(reply):
-    if isinstance(reply, str):
-        print(f"Bot: {reply}")
-        return
-
-    if isinstance(reply, dict):
-        kind = reply.get("kind")
-
-        if kind == "buttons":
-            print(f"Bot: {reply.get('body', '')}")
-            buttons = reply.get("buttons", [])
-            if buttons:
-                print("Buttons:")
-                for btn in buttons:
-                    print(f"- {btn.get('title', '')}  [id: {btn.get('id', '')}]")
-            if reply.get("footer"):
-                print(reply["footer"])
-            return
-
-        if kind == "list":
-            print(f"Bot: {reply.get('body', '')}")
-            rows = reply.get("rows", [])
-            if rows:
-                print("Options:")
-                for row in rows:
-                    print(
-                        f"- {row.get('title', '')} | "
-                        f"{row.get('description', '')} "
-                        f"[id: {row.get('id', '')}]"
-                    )
-            if reply.get("footer"):
-                print(reply["footer"])
-            return
-
-    print(f"Bot: {reply}")
-
-
-print("Local Jal Yoga test bot is ready.")
-print("Type 'exit' to stop.")
-print("Type things like: hi, trial, current member, general enquiry, corporate, staff hub")
-print()
-
-while True:
-    user_text = input("You: ").strip()
-
-    if user_text.lower() in {"exit", "quit"}:
-        print("Bye.")
-        break
-
-    reply = build_bot_reply(PHONE, user_text)
-    print_reply(reply)
+def bubble_left(text: str):
     print()
+    print("┌─ Jal Yoga Bot " + "─" * 42)
+    for line in text.splitlines():
+        print("│ " + line)
+    print("└" + "─" * 56)
+    print()
+
+
+def bubble_right(text: str):
+    print()
+    print(" " * 20 + "You")
+    for line in text.splitlines():
+        print(" " * 20 + line)
+    print()
+
+
+def main():
+    print("=" * 60)
+    print("Jal Yoga WhatsApp Bot Local Tester")
+    print("Type 'exit' or 'quit' to stop")
+    print("Type 'menu' to restart")
+    print("=" * 60)
+
+    while True:
+        user_text = input("You: ").strip()
+
+        if not user_text:
+            print("Please type something.")
+            continue
+
+        if user_text.lower() in {"exit", "quit"}:
+            print("Bye.")
+            break
+
+        try:
+            bubble_right(user_text)
+            reply = build_bot_reply(PHONE, user_text)
+            bubble_left(reply)
+        except Exception as e:
+            print()
+            print("Error:", str(e))
+            print()
+
+
+if __name__ == "__main__":
+    main()
