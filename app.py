@@ -208,6 +208,22 @@ def is_menu_request(text: str) -> bool:
     }
 
 
+def is_trial_request(text: str) -> bool:
+    t = normalize(text)
+    keywords = [
+        "trial",
+        "trail",
+        "trial lesson",
+        "trail lesson",
+        "trial class",
+        "free trial",
+        "book a trial",
+        "schedule a trial",
+        "trial session",
+    ]
+    return any(k in t for k in keywords)
+
+
 YES_WORDS = {
     "yes",
     "y",
@@ -748,14 +764,7 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> Union[str
         return address_text + "\n\n" + summary_text
 
     if flow == "main_menu" and step == "waiting_choice":
-        if reply_id == "menu_trial" or t in {
-            "1",
-            "schedule a trial",
-            "trial",
-            "book trial",
-            "book a trial",
-            "schedule trial",
-        }:
+        if reply_id == "menu_trial" or t == "1" or is_trial_request(raw_text or ""):
             set_state(phone, "trial", "ask_studio", {})
             return build_trial_studio_message()
 
