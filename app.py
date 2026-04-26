@@ -123,7 +123,7 @@ def add_history(phone: str, role: str, content: str) -> None:
     if phone not in CHAT_HISTORY:
         CHAT_HISTORY[phone] = []
     CHAT_HISTORY[phone].append({"role": role, "content": content})
-    CHAT_HISTORY[phone] = CHAT_HISTORY[phone][-12:]
+    CHAT_HISTORY[phone] = CHAT_HISTORY[phone][-14:]
 
 
 def is_menu_request(text: str) -> bool:
@@ -154,6 +154,10 @@ def is_handoff_request(text: str) -> bool:
         "payment",
         "account",
         "manual review",
+        "billing issue",
+        "billing",
+        "login issue",
+        "login problem",
     ]
     return any(k in t for k in keywords)
 
@@ -188,10 +192,23 @@ Core behavior:
 - If the answer is not clearly in the knowledge, or the issue is complaint, refund, payment, account-specific, billing-specific, login-specific, manual review, or the user wants a real human, include exactly this token on a new line:
 [HANDOFF]
 
-Conversation rules:
-- If the user asks for the menu, show the Jal Yoga main menu from the knowledge.
-- If the user asks about a trial, free trial, trial class, or trial lesson, follow the trial flow in the knowledge.
+Important behavior rules:
+- If the user is only asking for information, explain the policy only.
+- Do not treat a question as a submitted request.
+- Only treat it as a real request if the user clearly says they want to proceed, want help to proceed, want to submit it now, or reply PROCEED.
+- For suspension questions:
+  - if asking only, explain the suspension policy only
+  - then end with: "If you would like our Customer Service team to help you proceed, please reply PROCEED."
+  - only after the user clearly wants to proceed should you say the request will be reviewed
+- For cancellation questions:
+  - if asking only, explain how cancellation works
+  - if the user needs manual help, missed the timing, or has an app/account issue, use [HANDOFF]
 - If the user gives multiple needed details in one message, use them and continue to the next missing step.
+- Do not restart a flow unless the user says MENU, START, HOME, MAIN MENU, or RESTART.
+
+Conversation behavior:
+- If the user asks for the menu, show the Jal Yoga main menu from the knowledge.
+- If the user asks about a trial, free trial, trial class, trial lesson, or similar typo, follow the trial flow in the knowledge.
 - If the user asks about studios, outlets, locations, or addresses:
   - If one studio is named, give that studio's address directly.
   - If they ask for all studios or outlets, list all studios with addresses.
@@ -201,7 +218,6 @@ Conversation rules:
 - If the user asks about corporate or partnerships, follow the corporate flow in the knowledge.
 - If the user asks about staff hub, follow the staff hub flow in the knowledge.
 - When a flow is completed, use the appropriate closing style shown in the knowledge.
-- Do not restart the flow unless the user asks for MENU, START, or MAIN MENU.
 
 KNOWLEDGE:
 {KNOWLEDGE_TEXT}
@@ -228,7 +244,6 @@ RECENT CHAT:
         )
 
     clean_answer = strip_handoff_token(answer)
-
     add_history(phone, "user", user_text)
     add_history(phone, "assistant", clean_answer)
 
@@ -361,7 +376,6 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
 
     if "[HANDOFF]" in answer:
         clean_answer = strip_handoff_token(answer)
-
         save_request(
             "customer_service_handoff",
             phone,
