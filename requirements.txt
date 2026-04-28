@@ -1,6 +1,5 @@
-flask
+Flask
 gunicorn
-requests
 python-dotenv
+requests
 openai
-tzdata
