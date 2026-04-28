@@ -66,12 +66,15 @@
         }
 
         .btn {
+            border: none;
+            cursor: pointer;
             text-decoration: none;
             padding: 15px 24px;
             border-radius: 999px;
             font-weight: bold;
             color: white;
             display: inline-block;
+            font-size: 16px;
             transition: transform 0.2s ease, opacity 0.2s ease;
         }
 
@@ -82,10 +85,6 @@
 
         .telegram {
             background: #229ED9;
-        }
-
-        .telegram-app {
-            background: #1b8ac2;
         }
 
         .whatsapp {
@@ -124,17 +123,17 @@
             color: #4b2e20;
         }
 
+        .hint {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #666;
+        }
+
         .small {
             margin-top: 25px;
             font-size: 14px;
             color: #777;
             text-align: center;
-        }
-
-        .hint {
-            margin-top: 18px;
-            font-size: 14px;
-            color: #666;
         }
 
         @media (max-width: 600px) {
@@ -174,21 +173,21 @@
             </p>
 
             <div class="buttons">
-                <a class="btn telegram" href="https://t.me/Jalyogabot?start=start" target="_blank" rel="noopener noreferrer">
+                <button class="btn telegram" onclick="openTelegramBot()">
                     Chat on Telegram
-                </a>
+                </button>
 
-                <a class="btn telegram-app" href="tg://resolve?domain=Jalyogabot">
-                    Open Telegram App
-                </a>
-
-                <a class="btn whatsapp" href="https://wa.me/6590000000" target="_blank" rel="noopener noreferrer">
+                <button class="btn whatsapp" onclick="openWhatsApp()">
                     Contact Customer Service
-                </a>
+                </button>
             </div>
 
             <p class="hint">
-                If the Telegram button does not open, search <strong>@Jalyogabot</strong> inside Telegram and press <strong>Start</strong>.
+                If the Telegram button does not open, copy this into your browser:
+                <br>
+                <strong>https://t.me/Jalyogabot</strong>
+                <br><br>
+                Or search <strong>@Jalyogabot</strong> inside Telegram and press <strong>Start</strong>.
             </p>
 
             <div class="section">
@@ -227,5 +226,15 @@
             </p>
         </div>
     </section>
+
+    <script>
+        function openTelegramBot() {
+            window.location.href = "https://t.me/Jalyogabot";
+        }
+
+        function openWhatsApp() {
+            window.location.href = "https://wa.me/6590000000";
+        }
+    </script>
 </body>
 </html>
