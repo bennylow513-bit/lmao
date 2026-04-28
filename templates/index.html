@@ -72,10 +72,20 @@
             font-weight: bold;
             color: white;
             display: inline-block;
+            transition: transform 0.2s ease, opacity 0.2s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            opacity: 0.9;
         }
 
         .telegram {
             background: #229ED9;
+        }
+
+        .telegram-app {
+            background: #1b8ac2;
         }
 
         .whatsapp {
@@ -121,6 +131,12 @@
             text-align: center;
         }
 
+        .hint {
+            margin-top: 18px;
+            font-size: 14px;
+            color: #666;
+        }
+
         @media (max-width: 600px) {
             .card {
                 padding: 28px;
@@ -158,25 +174,51 @@
             </p>
 
             <div class="buttons">
-                <a class="btn telegram" href="{{ telegram_link }}" target="_blank">
+                <a class="btn telegram" href="https://t.me/Jalyogabot?start=start" target="_blank" rel="noopener noreferrer">
                     Chat on Telegram
                 </a>
 
-                <a class="btn whatsapp" href="{{ whatsapp_link }}" target="_blank">
+                <a class="btn telegram-app" href="tg://resolve?domain=Jalyogabot">
+                    Open Telegram App
+                </a>
+
+                <a class="btn whatsapp" href="https://wa.me/6590000000" target="_blank" rel="noopener noreferrer">
                     Contact Customer Service
                 </a>
             </div>
+
+            <p class="hint">
+                If the Telegram button does not open, search <strong>@Jalyogabot</strong> inside Telegram and press <strong>Start</strong>.
+            </p>
 
             <div class="section">
                 <h2>Our Studios</h2>
 
                 <div class="studios">
-                    {% for studio in studios %}
                     <div class="studio">
-                        <strong>{{ studio.name }}</strong><br>
-                        {{ studio.address }}
+                        <strong>Alexandra</strong><br>
+                        456 Alexandra Rd, #02-03, Singapore 119962
                     </div>
-                    {% endfor %}
+
+                    <div class="studio">
+                        <strong>Katong</strong><br>
+                        131 E Coast Rd, #03-01, Singapore 428816
+                    </div>
+
+                    <div class="studio">
+                        <strong>Kovan</strong><br>
+                        1F Yio Chu Kang Rd, Singapore 545512
+                    </div>
+
+                    <div class="studio">
+                        <strong>Upper Bukit Timah</strong><br>
+                        816 Upper Bukit Timah Road, Singapore 678149
+                    </div>
+
+                    <div class="studio">
+                        <strong>Woodlands</strong><br>
+                        8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713
+                    </div>
                 </div>
             </div>
 
