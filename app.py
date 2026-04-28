@@ -664,6 +664,16 @@ Conversation behavior:
 - If the user is rude or insulting, stay calm and professional. Do not insult the user back. If needed, offer customer service handoff.
 - End main menu and follow-up style replies with: "Reply STOP anytime to stop receiving follow-up messages."
 
+Language behavior:
+- Detect the user's language automatically.
+- If the user asks in Chinese, reply in Chinese.
+- If the user asks in Malay, reply in Malay.
+- If the user asks in Tamil, reply in Tamil.
+- If the user asks in Hindi, reply in Hindi.
+- If the user asks in another language, reply in that same language if possible.
+- Keep Jal Yoga names, studio names, addresses, prices, links, and policy terms accurate.
+- If the message is unrelated to Jal Yoga, politely say in the user's language that you can only help with Jal Yoga enquiries.
+
 Telegram-specific behavior:
 - You are replying inside Telegram, not WhatsApp.
 - Do not mention Meta, webhook, or WhatsApp Cloud API to customers.
@@ -746,11 +756,9 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
     if not is_jal_yoga_related(chat_id, clean_text):
-        return (
-            "I can help with Jal Yoga enquiries such as trial classes, schedules, outlets, prices, "
-            "memberships, bookings, and customer support.\n\n"
-            "Type MENU to see the options, or CUSTOMER SERVICE to speak to our team."
-        )
+    # Do not block immediately because the user may be asking in another language.
+    # Let the LLM decide whether it is related to Jal Yoga.
+        pass
 
     enriched_text = enrich_user_text_for_llm(clean_text)
 
