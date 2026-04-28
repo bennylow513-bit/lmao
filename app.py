@@ -32,21 +32,78 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 USER_ACTIVITY: Dict[str, Dict[str, Any]] = {}
+MESSAGE_SEND_LOG: Dict[str, List[float]] = {}
 
-INACTIVITY_SECONDS = 30  # change to 30 for testing
-INACTIVITY_CHECK_INTERVAL = 30
+# WhatsApp / Meta safety settings.
+# Keep follow-ups low-volume and only inside the 24-hour customer-service window.
+CUSTOMER_SERVICE_WINDOW_SECONDS = 24 * 60 * 60
+INACTIVITY_ENABLED = os.getenv("INACTIVITY_ENABLED", "true").lower() == "true"
+INACTIVITY_SECONDS = int(os.getenv("INACTIVITY_SECONDS", "600"))  # 10 minutes by default
+INACTIVITY_CHECK_INTERVAL = int(os.getenv("INACTIVITY_CHECK_INTERVAL", "60"))
+OUTBOUND_RATE_LIMIT_COUNT = int(os.getenv("OUTBOUND_RATE_LIMIT_COUNT", "8"))
+OUTBOUND_RATE_LIMIT_WINDOW = int(os.getenv("OUTBOUND_RATE_LIMIT_WINDOW", "60"))
+LOG_FULL_MESSAGES = os.getenv("LOG_FULL_MESSAGES", "false").lower() == "true"
+OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "opt_out_users.json")
+
 INACTIVITY_MESSAGE = (
-    "Hey, are you still there? 😊\n\n"
-    "If you still need help, just reply here and I’ll continue."
+    "Hi, do you still need help with your Jal Yoga enquiry? 😊\n\n"
+    "If yes, just reply here and I’ll continue. Reply STOP anytime to stop receiving follow-up messages."
 )
+
+OPT_OUT_CONFIRMATION = (
+    "Noted — you have been unsubscribed and will not receive follow-up messages. "
+    "If you need help later, reply START."
+)
+
+OPT_IN_CONFIRMATION = (
+    "Welcome back — you are subscribed again. Type MENU to see Jal Yoga options."
+)
+
+OPT_OUT_WORDS = {
+    "stop", "unsubscribe", "opt out", "opt-out", "remove me", "no more messages",
+    "do not message me", "dont message me", "don't message me", "cancel messages"
+}
+
+OPT_IN_WORDS = {"start", "subscribe", "opt in", "opt-in"}
+
+SENSITIVE_KEYWORDS = [
+    "nric", "ic number", "passport number", "credit card", "debit card",
+    "card number", "cvv", "otp", "one time password", "password",
+    "bank account", "bank number"
+]
+
+JAL_YOGA_GENERAL_KEYWORDS = {
+    "jal", "yoga", "pilates", "barre", "trial", "class", "classes", "schedule",
+    "studio", "studios", "outlet", "outlets", "location", "address", "membership",
+    "member", "package", "price", "pricing", "booking", "book", "cancel", "cancellation",
+    "suspend", "suspension", "pause", "freeze", "refer", "friend", "corporate",
+    "partnership", "staff", "hours", "open", "close", "trainer", "customer service"
+}
+
+
+def load_opt_out_users() -> set:
+    try:
+        with open(OPT_OUT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return set(str(item) for item in data)
+    except Exception:
+        pass
+    return set()
+
+
+OPT_OUT_USERS = load_opt_out_users()
 
 
 def load_knowledge_text() -> str:
-    try:
-        with open("knowledge.txt", "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return ""
+    # Render should use knowledge.txt. The fallback helps when testing with uploaded files.
+    for filename in ("knowledge.txt", "knowledge(1).txt"):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            continue
+    return ""
 
 
 KNOWLEDGE_TEXT = load_knowledge_text()
@@ -215,6 +272,124 @@ def save_request(kind: str, phone: str, payload: Dict[str, Any]) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def save_opt_out_users() -> None:
+    with open(OPT_OUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(OPT_OUT_USERS), f, ensure_ascii=False, indent=2)
+
+
+def set_user_opt_out(phone: str, opted_out: bool) -> None:
+    if not phone:
+        return
+    if opted_out:
+        OPT_OUT_USERS.add(phone)
+    else:
+        OPT_OUT_USERS.discard(phone)
+    save_opt_out_users()
+
+
+def is_user_opted_out(phone: str) -> bool:
+    return bool(phone and phone in OPT_OUT_USERS)
+
+
+def is_opt_out_request(text: str) -> bool:
+    t = normalize(text)
+
+    # Important: "stop membership" should mean membership suspension, not WhatsApp opt-out.
+    if t in OPT_OUT_WORDS:
+        return True
+
+    long_phrases = [word for word in OPT_OUT_WORDS if " " in word or "-" in word]
+    return any(phrase in t for phrase in long_phrases)
+
+
+def is_opt_in_request(text: str) -> bool:
+    t = normalize(text)
+    return t in OPT_IN_WORDS
+
+
+def contains_sensitive_keyword(text: str) -> bool:
+    t = normalize(text)
+    return any(keyword in t for keyword in SENSITIVE_KEYWORDS)
+
+
+def is_jal_yoga_related(phone: str, text: str) -> bool:
+    # During an active flow, short replies such as names, goals, PROCEED, or studio choices are allowed.
+    if CHAT_HISTORY.get(phone):
+        return True
+
+    t = normalize(text)
+    if not t:
+        return True
+
+    if is_menu_request(t) or is_handoff_request(t):
+        return True
+
+    if t in {"yes", "no", "ok", "okay", "sure", "proceed", "skip", "thanks", "thank you"}:
+        return True
+
+    studio, studio_score = detect_studio_from_text(t)
+    if studio and studio_score >= 0.72:
+        return True
+
+    intent, intent_score = detect_intent_from_text(t)
+    if intent and intent_score >= 0.72:
+        return True
+
+    words = set(t.split())
+    return bool(words & JAL_YOGA_GENERAL_KEYWORDS)
+
+
+def mask_phone(phone: str) -> str:
+    if not phone or len(phone) <= 4:
+        return "****"
+    return "*" * max(len(phone) - 4, 0) + phone[-4:]
+
+
+def is_inside_customer_service_window(phone: str) -> bool:
+    if phone == "LOCAL_TEST":
+        return True
+    state = USER_ACTIVITY.get(phone, {})
+    last_user_message_time = state.get("last_user_message_time")
+    if not last_user_message_time:
+        return False
+    return (time.time() - float(last_user_message_time)) <= CUSTOMER_SERVICE_WINDOW_SECONDS
+
+
+def is_rate_limited(phone: str) -> bool:
+    now = time.time()
+    timestamps = MESSAGE_SEND_LOG.setdefault(phone, [])
+    MESSAGE_SEND_LOG[phone] = [
+        ts for ts in timestamps if now - ts <= OUTBOUND_RATE_LIMIT_WINDOW
+    ]
+
+    if len(MESSAGE_SEND_LOG[phone]) >= OUTBOUND_RATE_LIMIT_COUNT:
+        return True
+
+    MESSAGE_SEND_LOG[phone].append(now)
+    return False
+
+
+def can_send_free_text(phone: str) -> Tuple[bool, str]:
+    if not phone:
+        return False, "Missing phone number."
+
+    if is_user_opted_out(phone):
+        return False, "User opted out."
+
+    if not is_inside_customer_service_window(phone):
+        return False, "Outside the 24-hour customer-service window. Use an approved Message Template instead."
+
+    if is_rate_limited(phone):
+        return False, "Outbound rate limit reached."
+
+    return True, "OK"
+
+
+def is_compliance_confirmation(message: str) -> bool:
+    t = normalize(message)
+    return "unsubscribed" in t or "subscribed again" in t
+
+
 def reset_history(phone: str) -> None:
     CHAT_HISTORY.pop(phone, None)
 
@@ -227,8 +402,14 @@ def add_history(phone: str, role: str, content: str) -> None:
 
 
 def mark_user_active(phone: str) -> None:
+    if not phone:
+        return
+
+    now = time.time()
     USER_ACTIVITY[phone] = {
-        "last_seen": time.time(),
+        "last_seen": now,
+        "last_user_message_time": now,
+        "last_seen_sg": now_singapore_iso(),
         "reminder_sent": False,
     }
 
@@ -388,11 +569,15 @@ You are Jal Yoga Singapore's WhatsApp assistant.
 Use ONLY the knowledge below.
 
 Core behavior:
-- Handle as much of the conversation as possible naturally.
+- You are a Jal Yoga customer-service assistant, not a general-purpose chatbot.
+- Handle as much of the Jal Yoga conversation as possible naturally.
 - Ask one question at a time.
 - Continue multi-step flows based on recent chat context.
 - Keep replies concise, warm, and professional.
+- Do not send marketing, promotions, pressure selling, or unrelated content.
 - Do not invent prices, schedules, trainers, promotions, phone numbers, or any facts not shown in the knowledge.
+- Never ask for NRIC, passport number, full payment card number, CVV, OTP, passwords, or bank details.
+- If the user asks for medical diagnosis, legal advice, financial advice, or anything unrelated to Jal Yoga, politely say you can only help with Jal Yoga enquiries.
 - If the answer is not clearly in the knowledge, or the issue is complaint, refund, payment, account-specific, billing-specific, login-specific, manual review, or the user wants a real human, include exactly this token on a new line:
 [HANDOFF]
 
@@ -427,9 +612,10 @@ Conversation behavior:
 - If the user asks about corporate or partnerships, follow the corporate flow in the knowledge.
 - If the user asks about staff hub, follow the staff hub flow in the knowledge.
 - When a flow is completed, use the appropriate closing style shown in the knowledge.
--If the user ask for a different language, reply in the same language that the user has used.
--If the user speaks in english, reply in British English.
--If the user has insulted the bot, reply "We wont serve you unless you say Im Sorry", in this case,Chatbot will ignore all Important behaviour rules until the user has said "Im Sorry".
+- If the user asks for a different language, reply in the same language that the user has used.
+- If the user speaks in English, reply in British English.
+- If the user is rude or insulting, stay calm and professional. Do not insult the user back. If needed, offer customer service handoff.
+- End main menu and follow-up style replies with: "Reply STOP anytime to stop receiving follow-up messages."
 KNOWLEDGE:
 {KNOWLEDGE_TEXT}
 
@@ -461,7 +647,24 @@ RECENT CHAT:
     return answer
 
 
-def send_whatsapp_message(to: str, message: str) -> None:
+def send_whatsapp_message(to: str, message: str, force: bool = False) -> bool:
+    if not message or not str(message).strip():
+        return False
+
+    if not force:
+        ok, reason = can_send_free_text(to)
+        if not ok:
+            save_request(
+                "message_blocked_by_compliance",
+                to,
+                {
+                    "reason": reason,
+                    "message_preview": str(message)[:120],
+                },
+            )
+            print("MESSAGE BLOCKED:", reason, "TO:", mask_phone(to))
+            return False
+
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -476,8 +679,11 @@ def send_whatsapp_message(to: str, message: str) -> None:
     }
 
     print("SEND URL:", url)
-    print("SEND TO:", to)
-    print("SEND PAYLOAD:", json.dumps(payload, indent=2, ensure_ascii=False))
+    print("SEND TO:", mask_phone(to))
+    if LOG_FULL_MESSAGES:
+        print("SEND PAYLOAD:", json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print("SEND MESSAGE PREVIEW:", str(message)[:120])
 
     response = requests.post(url, headers=headers, json=payload, timeout=30)
 
@@ -485,6 +691,7 @@ def send_whatsapp_message(to: str, message: str) -> None:
     print("SEND RESPONSE:", response.text)
 
     response.raise_for_status()
+    return True
 
 
 def inactivity_monitor(test_mode: bool = False, reminder_queue=None) -> None:
@@ -496,37 +703,65 @@ def inactivity_monitor(test_mode: bool = False, reminder_queue=None) -> None:
             last_seen = state.get("last_seen", now)
             reminder_sent = state.get("reminder_sent", False)
 
-            if not reminder_sent and (now - last_seen) >= INACTIVITY_SECONDS:
-                try:
-                    if test_mode and reminder_queue is not None and phone == "LOCAL_TEST":
-                        reminder_queue.put(INACTIVITY_MESSAGE)
-                    else:
-                        send_whatsapp_message(phone, INACTIVITY_MESSAGE)
+            if reminder_sent or (now - last_seen) < INACTIVITY_SECONDS:
+                continue
 
-                    USER_ACTIVITY[phone]["reminder_sent"] = True
+            if is_user_opted_out(phone):
+                save_request(
+                    "inactive_followup_skipped",
+                    phone,
+                    {"reason": "User opted out.", "sent_at": now_singapore_iso(), "test_mode": test_mode},
+                )
+                USER_ACTIVITY[phone]["reminder_sent"] = True
+                continue
 
-                    save_request(
-                        "inactive_followup_sent",
-                        phone,
-                        {
-                            "message": INACTIVITY_MESSAGE,
-                            "sent_at": now_singapore_iso(),
-                            "test_mode": test_mode,
-                        },
-                    )
-                except Exception as e:
-                    save_request(
-                        "inactive_followup_error",
-                        phone,
-                        {
-                            "error": str(e),
-                            "sent_at": now_singapore_iso(),
-                            "test_mode": test_mode,
-                        },
-                    )
+            if not is_inside_customer_service_window(phone):
+                save_request(
+                    "inactive_followup_skipped",
+                    phone,
+                    {
+                        "reason": "Outside 24-hour customer-service window. Use approved template instead.",
+                        "sent_at": now_singapore_iso(),
+                        "test_mode": test_mode,
+                    },
+                )
+                USER_ACTIVITY[phone]["reminder_sent"] = True
+                continue
+
+            try:
+                if test_mode and reminder_queue is not None and phone == "LOCAL_TEST":
+                    reminder_queue.put(INACTIVITY_MESSAGE)
+                    sent = True
+                else:
+                    sent = send_whatsapp_message(phone, INACTIVITY_MESSAGE)
+
+                USER_ACTIVITY[phone]["reminder_sent"] = True
+
+                save_request(
+                    "inactive_followup_sent" if sent else "inactive_followup_not_sent",
+                    phone,
+                    {
+                        "message": INACTIVITY_MESSAGE,
+                        "sent_at": now_singapore_iso(),
+                        "test_mode": test_mode,
+                    },
+                )
+            except Exception as e:
+                save_request(
+                    "inactive_followup_error",
+                    phone,
+                    {
+                        "error": str(e),
+                        "sent_at": now_singapore_iso(),
+                        "test_mode": test_mode,
+                    },
+                )
 
 
 def start_inactivity_thread(test_mode: bool = False, reminder_queue=None) -> None:
+    if not INACTIVITY_ENABLED and not test_mode:
+        return
+
     if getattr(app, "_inactivity_thread_started", False):
         return
 
@@ -621,17 +856,52 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
     if incoming is None:
         return (
             "I can currently handle text messages only.\n"
-            "Please type your message, or type CUSTOMER SERVICE for manual help."
+            "Please type your message, or type CUSTOMER SERVICE for manual help.\n\n"
+            "Reply STOP anytime to stop receiving follow-up messages."
         )
 
     clean_text = raw_text or ""
+
+    if is_opt_out_request(clean_text):
+        set_user_opt_out(phone, True)
+        reset_history(phone)
+        save_request("user_opted_out", phone, {"user_message": clean_text})
+        return OPT_OUT_CONFIRMATION
+
+    if is_opt_in_request(clean_text) and is_user_opted_out(phone):
+        set_user_opt_out(phone, False)
+        save_request("user_opted_in", phone, {"user_message": clean_text})
+        return OPT_IN_CONFIRMATION
+
+    if is_user_opted_out(phone):
+        return (
+            "You have opted out of follow-up messages. "
+            "If you want to chat with Jal Yoga again, please reply START."
+        )
+
+    if contains_sensitive_keyword(clean_text):
+        save_request("sensitive_info_blocked", phone, {"user_message_preview": clean_text[:120]})
+        return (
+            "For your safety, please do not share NRIC, passport numbers, card numbers, CVV, OTP, "
+            "passwords, or bank details here.\n\n"
+            "For account-specific or payment-related help, please type CUSTOMER SERVICE."
+        )
+
+    if not is_jal_yoga_related(phone, clean_text):
+        return (
+            "I can help with Jal Yoga enquiries such as trial classes, schedules, outlets, prices, "
+            "memberships, bookings, and customer support.\n\n"
+            "Type MENU to see the options, or CUSTOMER SERVICE to speak to our team.\n\n"
+            "Reply STOP anytime to stop receiving follow-up messages."
+        )
+
     enriched_text = enrich_user_text_for_llm(clean_text)
 
     if is_menu_request(clean_text):
         reset_history(phone)
         answer = ask_llm(
             phone,
-            "Show the Jal Yoga main menu exactly as written in the knowledge.",
+            "Show the Jal Yoga main menu exactly as written in the knowledge. Add this line at the end: Reply STOP anytime to stop receiving follow-up messages.",
             history_user_text=clean_text,
         )
         return strip_handoff_token(answer)
@@ -645,7 +915,9 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
         reset_history(phone)
         return (
             "Please let us know how we can help you!\n\n"
-            "Our Customer Service team will review your message and get back to you as soon as possible."
+            "Simply type your enquiry below. While our response may not be immediate, "
+            "our Customer Service team will review your message and get back to you as soon as possible.\n\n"
+            "Reply STOP anytime to stop receiving follow-up messages."
         )
 
     answer = ask_llm(
@@ -667,10 +939,10 @@ def process_message(phone: str, incoming: Optional[Dict[str, Any]]) -> str:
         reset_history(phone)
 
         if clean_answer:
-            return clean_answer + "\n\nOur Customer Service team will review your message."
-        return "Our Customer Service team will review your message."
+            return clean_answer + "\n\nOur Customer Service team will review your message.\n\nReply STOP anytime to stop receiving follow-up messages."
+        return "Our Customer Service team will review your message.\n\nReply STOP anytime to stop receiving follow-up messages."
 
-    return strip_handoff_token(answer) + "\n\nReply MENU to return to the main menu."
+    return strip_handoff_token(answer) + "\n\nReply MENU to return to the main menu. Reply STOP anytime to stop receiving follow-up messages."
 
 
 def build_bot_reply(phone: str, user_text: str) -> str:
@@ -722,7 +994,12 @@ def webhook():
 
     try:
         reply = process_message(phone, incoming)
-        send_whatsapp_message(phone, reply)
+        if reply:
+            send_whatsapp_message(
+                phone,
+                reply,
+                force=is_compliance_confirmation(reply),
+            )
     except Exception as e:
         error_message = (
             "I’m sorry — something went wrong on our side.\n"
@@ -747,4 +1024,8 @@ def webhook():
 
 if __name__ == "__main__":
     start_inactivity_thread()
-    app.run(host="0.0.0.0", port=PORT, debug=True)
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        debug=os.getenv("FLASK_DEBUG", "false").lower() == "true",
+    )
