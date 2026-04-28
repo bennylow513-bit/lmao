@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import traceback
 from datetime import datetime
 from difflib import get_close_matches
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,6 +28,13 @@ TELEGRAM_SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "")
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
 
 CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
+
+# Optional outlet-specific WhatsApp numbers
+ALEXANDRA_WHATSAPP_NUMBER = os.getenv("ALEXANDRA_WHATSAPP_NUMBER", "")
+KATONG_WHATSAPP_NUMBER = os.getenv("KATONG_WHATSAPP_NUMBER", "")
+KOVAN_WHATSAPP_NUMBER = os.getenv("KOVAN_WHATSAPP_NUMBER", "")
+UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER = os.getenv("UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER", "")
+WOODLANDS_WHATSAPP_NUMBER = os.getenv("WOODLANDS_WHATSAPP_NUMBER", "")
 
 PORT = int(os.getenv("PORT", "5000"))
 
@@ -143,6 +151,45 @@ JAL_YOGA_GENERAL_KEYWORDS = {
     "service",
     "human",
     "agent",
+
+    # Chinese
+    "瑜伽",
+    "试课",
+    "課程",
+    "课程",
+    "会员",
+    "會員",
+    "地址",
+    "营业时间",
+    "營業時間",
+    "取消",
+    "暂停",
+    "暫停",
+    "客服",
+
+    # Malay
+    "kelas",
+    "percubaan",
+    "keahlian",
+    "alamat",
+    "waktu",
+    "batal",
+    "gantung",
+    "khidmat pelanggan",
+
+    # Tamil
+    "யோகா",
+    "வகுப்பு",
+    "முகவரி",
+    "உறுப்பினர்",
+    "நேரம்",
+
+    # Hindi
+    "योग",
+    "कक्षा",
+    "पता",
+    "सदस्यता",
+    "समय",
 }
 
 KNOWN_INTENTS: Dict[str, List[str]] = {
@@ -160,6 +207,37 @@ KNOWN_INTENTS: Dict[str, List[str]] = {
         "free lesson",
         "got trial",
     ],
+
+    "membership_info": [
+        "membership",
+        "membership type",
+        "membership types",
+        "types of membership",
+        "different type of membership",
+        "different types of membership",
+        "what membership do you have",
+        "what package do you have",
+        "membership package",
+        "membership packages",
+        "price",
+        "pricing",
+        "fee",
+        "fees",
+        "cost",
+        "costs",
+        "plan",
+        "plans",
+        "memebership",
+        "memeber",
+        "memebrship",
+        "membeship",
+        "memeberhsip",
+        "differetn tyope of memebership",
+        "differetn type of membership",
+        "different tyope of membership",
+        "tyope of membership",
+    ],
+
     "suspension": [
         "suspension",
         "suspend membership",
@@ -170,12 +248,15 @@ KNOWN_INTENTS: Dict[str, List[str]] = {
         "medical suspension",
         "suspen",
     ],
+
     "cancellation": [
         "cancel class",
         "class cancellation",
         "cancel booking",
         "late cancellation",
+        "cancel",
     ],
+
     "booking_help": [
         "booking help",
         "cannot book",
@@ -185,7 +266,9 @@ KNOWN_INTENTS: Dict[str, List[str]] = {
         "class booking",
         "cannot book class",
         "cant bok",
+        "app cannot book",
     ],
+
     "refer_friend": [
         "refer friend",
         "refer a friend",
@@ -193,18 +276,23 @@ KNOWN_INTENTS: Dict[str, List[str]] = {
         "reffer friend",
         "refer a fren",
     ],
+
     "corporate": [
         "corporate",
         "partnership",
         "corporate partnership",
         "corporate collab",
         "parternship",
+        "company",
+        "collaboration",
     ],
+
     "staff_hub": [
         "staff hub",
         "staff booking",
         "staf hub",
     ],
+
     "locations": [
         "location",
         "locations",
@@ -217,12 +305,15 @@ KNOWN_INTENTS: Dict[str, List[str]] = {
         "where is",
         "where ah",
     ],
+
     "hours": [
         "hours",
         "opening hours",
         "operating hours",
         "what time open",
         "what time close",
+        "open",
+        "close",
     ],
 }
 
@@ -245,7 +336,12 @@ STOP_WORDS = {
 # =========================
 
 def load_knowledge_text() -> str:
-    for filename in ("knowledge.txt", "knowledge(6).txt", "knowledge(1).txt"):
+    for filename in (
+        "knowledge.txt",
+        "knowledge(8).txt",
+        "knowledge(6).txt",
+        "knowledge(1).txt",
+    ):
         try:
             with open(filename, "r", encoding="utf-8") as f:
                 return f.read().strip()
@@ -377,6 +473,26 @@ def best_fuzzy_match(text: str, choices: List[str], cutoff: float = 0.72) -> Opt
 def detect_studio_from_text(text: str) -> Tuple[Optional[str], float]:
     t = normalize(text)
 
+    studio_aliases = {
+        "alex": "Alexandra",
+        "alexandra": "Alexandra",
+        "katong": "Katong",
+        "katon": "Katong",
+        "katung": "Katong",
+        "kovan": "Kovan",
+        "koven": "Kovan",
+        "woodlands": "Woodlands",
+        "woodland": "Woodlands",
+        "upper bukit timah": "Upper Bukit Timah",
+        "bukit timah": "Upper Bukit Timah",
+        "bukit timmah": "Upper Bukit Timah",
+        "ubt": "Upper Bukit Timah",
+    }
+
+    for alias, studio in studio_aliases.items():
+        if alias in t:
+            return studio, 1.0
+
     for studio in KNOWN_STUDIOS:
         if studio.lower() in t:
             return studio, 1.0
@@ -454,14 +570,18 @@ def enrich_user_text_for_llm(text: str) -> str:
 
     studio, studio_score = detect_studio_from_text(original)
     intent, intent_score = detect_intent_from_text(original)
+    topic = detect_handoff_topic(original)
 
     hints = []
 
-    if studio and studio_score >= 0.8:
+    if studio and studio_score >= 0.72:
         hints.append(f"Detected studio: {studio}")
 
-    if intent and intent_score >= 0.75:
+    if intent and intent_score >= 0.72:
         hints.append(f"Detected intent: {intent}")
+
+    if topic:
+        hints.append(f"Detected topic: {topic['topic_label']}")
 
     if not hints:
         return original
@@ -576,20 +696,218 @@ def strip_handoff_token(text: str) -> str:
     return text.replace("[HANDOFF]", "").strip()
 
 
-def customer_service_reply() -> str:
-    if CUSTOMER_SERVICE_WHATSAPP_NUMBER:
-        number = CUSTOMER_SERVICE_WHATSAPP_NUMBER.replace("+", "").replace(" ", "")
+# =========================
+# UNIVERSAL HANDOFF DETECTION
+# =========================
 
+def get_studio_address(studio_name: str) -> str:
+    for studio in STUDIOS:
+        if studio["name"].lower() == studio_name.lower():
+            return studio["address"]
+    return ""
+
+
+OUTLET_CONTACTS = {
+    "Alexandra": ALEXANDRA_WHATSAPP_NUMBER,
+    "Katong": KATONG_WHATSAPP_NUMBER,
+    "Kovan": KOVAN_WHATSAPP_NUMBER,
+    "Upper Bukit Timah": UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER,
+    "Woodlands": WOODLANDS_WHATSAPP_NUMBER,
+}
+
+
+def make_wa_link(number: str) -> str:
+    clean_number = number.replace("+", "").replace(" ", "").strip()
+    return f"https://wa.me/{clean_number}" if clean_number else ""
+
+
+def detect_handoff_topic(text: str) -> Dict[str, str]:
+    t = normalize(text)
+
+    topic_rules = [
+        {
+            "key": "refund",
+            "label": "Refund request",
+            "keywords": ["refund", "money back", "return money"],
+        },
+        {
+            "key": "payment_billing",
+            "label": "Payment or billing issue",
+            "keywords": ["payment", "billing", "charged", "invoice", "paid", "pay", "card", "transaction"],
+        },
+        {
+            "key": "login_account",
+            "label": "Login or account issue",
+            "keywords": ["login", "log in", "account", "password", "cannot access", "cant access", "can't access"],
+        },
+        {
+            "key": "membership_pricing",
+            "label": "Membership or pricing enquiry",
+            "keywords": [
+                "membership",
+                "member",
+                "package",
+                "packages",
+                "price",
+                "pricing",
+                "plan",
+                "plans",
+                "fee",
+                "fees",
+                "cost",
+                "memebership",
+                "memeber",
+                "memebrship",
+                "membeship",
+                "differetn tyope",
+                "different type",
+                "different types",
+            ],
+        },
+        {
+            "key": "trial",
+            "label": "Trial class enquiry",
+            "keywords": ["trial", "trail", "triel", "free lesson", "first time", "try class"],
+        },
+        {
+            "key": "booking",
+            "label": "Class booking issue",
+            "keywords": ["booking", "book class", "cannot book", "cant book", "can't book", "booking issue", "app not working"],
+        },
+        {
+            "key": "cancellation",
+            "label": "Class cancellation enquiry",
+            "keywords": ["cancel", "cancellation", "late cancellation", "no show", "no-show"],
+        },
+        {
+            "key": "suspension",
+            "label": "Membership suspension enquiry",
+            "keywords": ["suspend", "suspension", "pause", "freeze", "medical suspension", "travel suspension"],
+        },
+        {
+            "key": "corporate",
+            "label": "Corporate or partnership enquiry",
+            "keywords": ["corporate", "partnership", "collab", "collaboration", "company"],
+        },
+        {
+            "key": "staff_hub",
+            "label": "Staff Hub enquiry",
+            "keywords": ["staff hub", "staff booking", "staff"],
+        },
+        {
+            "key": "schedule",
+            "label": "Class schedule enquiry",
+            "keywords": ["schedule", "timetable", "class time", "class timing"],
+        },
+        {
+            "key": "location",
+            "label": "Studio location enquiry",
+            "keywords": ["location", "address", "outlet", "studio", "where is", "where ah"],
+        },
+        {
+            "key": "human",
+            "label": "Human customer service request",
+            "keywords": ["human", "agent", "customer service", "real person", "talk to someone", "speak to someone", "cs"],
+        },
+        {
+            "key": "complaint",
+            "label": "Complaint or manual review",
+            "keywords": ["complaint", "complain", "manual review", "unhappy", "bad service"],
+        },
+    ]
+
+    for rule in topic_rules:
+        for keyword in rule["keywords"]:
+            if keyword in t:
+                return {
+                    "topic_key": rule["key"],
+                    "topic_label": rule["label"],
+                }
+
+    detected_intent, intent_score = detect_intent_from_text(text)
+
+    intent_to_topic = {
+        "trial": "Trial class enquiry",
+        "suspension": "Membership suspension enquiry",
+        "cancellation": "Class cancellation enquiry",
+        "booking_help": "Class booking issue",
+        "refer_friend": "Refer-a-friend enquiry",
+        "corporate": "Corporate or partnership enquiry",
+        "staff_hub": "Staff Hub enquiry",
+        "locations": "Studio location enquiry",
+        "hours": "Operating hours enquiry",
+        "membership_info": "Membership or pricing enquiry",
+    }
+
+    if detected_intent and intent_score >= 0.72:
+        return {
+            "topic_key": detected_intent,
+            "topic_label": intent_to_topic.get(detected_intent, "Jal Yoga enquiry"),
+        }
+
+    return {
+        "topic_key": "general",
+        "topic_label": "General Jal Yoga enquiry",
+    }
+
+
+def detect_handoff_context(user_text: str, llm_answer: str = "") -> Dict[str, Any]:
+    detected_studio, studio_score = detect_studio_from_text(user_text)
+    chosen_studio = detected_studio if detected_studio and studio_score >= 0.72 else None
+
+    topic = detect_handoff_topic(user_text)
+
+    return {
+        "user_message": user_text,
+        "llm_answer": llm_answer,
+        "detected_studio": chosen_studio,
+        "studio_score": studio_score,
+        "topic_key": topic["topic_key"],
+        "topic_label": topic["topic_label"],
+    }
+
+
+def customer_service_reply(context: Optional[Dict[str, Any]] = None) -> str:
+    context = context or {}
+
+    topic_label = context.get("topic_label", "General Jal Yoga enquiry")
+    studio_name = context.get("detected_studio")
+
+    selected_number = CUSTOMER_SERVICE_WHATSAPP_NUMBER
+    address_text = ""
+
+    if studio_name:
+        outlet_number = OUTLET_CONTACTS.get(studio_name, "")
+        address = get_studio_address(studio_name)
+
+        if outlet_number:
+            selected_number = outlet_number
+
+        if address:
+            address_text = (
+                f"\n\nDetected outlet:\n"
+                f"{studio_name}\n"
+                f"{address}"
+            )
+
+    wa_link = make_wa_link(selected_number)
+
+    if wa_link:
         return (
-            "You can speak to our Customer Service team on WhatsApp here:\n"
-            f"https://wa.me/{number}\n\n"
-            "Please send them your enquiry and they will assist you."
+            f"I detected your enquiry is about:\n"
+            f"{topic_label}"
+            f"{address_text}\n\n"
+            f"You can speak to our Customer Service team here:\n"
+            f"{wa_link}\n\n"
+            f"Please send them your enquiry and they will assist you."
         )
 
     return (
-        "Please let us know how we can help you!\n\n"
-        "Simply type your enquiry below. While our response may not be immediate, "
-        "our Customer Service team will review your message and get back to you as soon as possible."
+        f"I detected your enquiry is about:\n"
+        f"{topic_label}"
+        f"{address_text}\n\n"
+        "Please let us know how we can help you.\n\n"
+        "Our Customer Service team will review your message and get back to you as soon as possible."
     )
 
 
@@ -674,6 +992,18 @@ Language behavior:
 - Keep Jal Yoga names, studio names, addresses, prices, links, and policy terms accurate.
 - If the message is unrelated to Jal Yoga, politely say in the user's language that you can only help with Jal Yoga enquiries.
 
+Typo and prediction behavior:
+- The user may type with spelling mistakes, broken English, Singlish, or short forms.
+- Try to infer the likely meaning if it is related to Jal Yoga.
+- Examples:
+  - "differetn tyope of memebership" means "different types of membership"
+  - "katon" means "Katong"
+  - "koven" means "Kovan"
+  - "can talk human katong" means the user wants customer service for Katong outlet
+- If the likely meaning is clear and related to Jal Yoga, answer naturally.
+- If the question asks for information not found in the knowledge, do not invent. Use [HANDOFF].
+- If the user mentions a specific outlet when asking for customer service, keep that outlet name in the handoff response.
+
 Telegram-specific behavior:
 - You are replying inside Telegram, not WhatsApp.
 - Do not mention Meta, webhook, or WhatsApp Cloud API to customers.
@@ -755,9 +1085,10 @@ def process_message(chat_id: str, user_text: str) -> str:
             "For account-specific or payment-related help, please type CUSTOMER SERVICE."
         )
 
+    # Do not block immediately.
+    # User may type with spelling mistakes or another language.
+    # Let OpenAI decide whether the message is related to Jal Yoga.
     if not is_jal_yoga_related(chat_id, clean_text):
-    # Do not block immediately because the user may be asking in another language.
-    # Let the LLM decide whether it is related to Jal Yoga.
         pass
 
     enriched_text = enrich_user_text_for_llm(clean_text)
@@ -776,9 +1107,15 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_handoff_request(clean_text):
         reset_history(chat_id)
 
-        save_request("customer_service_handoff", chat_id, {"user_message": clean_text})
+        context = detect_handoff_context(clean_text)
 
-        return customer_service_reply()
+        save_request(
+            "customer_service_handoff",
+            chat_id,
+            context,
+        )
+
+        return customer_service_reply(context)
 
     answer = ask_llm(chat_id, enriched_text, history_user_text=clean_text)
 
@@ -786,19 +1123,18 @@ def process_message(chat_id: str, user_text: str) -> str:
         clean_answer = strip_handoff_token(answer)
         reset_history(chat_id)
 
+        context = detect_handoff_context(clean_text, clean_answer)
+
         save_request(
             "customer_service_handoff",
             chat_id,
-            {
-                "user_message": clean_text,
-                "llm_answer": clean_answer,
-            },
+            context,
         )
 
         if clean_answer:
-            return clean_answer + "\n\n" + customer_service_reply()
+            return clean_answer + "\n\n" + customer_service_reply(context)
 
-        return customer_service_reply()
+        return customer_service_reply(context)
 
     return strip_handoff_token(answer) + "\n\nReply MENU to return to the main menu."
 
@@ -887,6 +1223,16 @@ def health():
     )
 
 
+@app.route("/telegram/webhook", methods=["GET"])
+def telegram_webhook_test():
+    return jsonify(
+        {
+            "status": "ok",
+            "message": "Telegram webhook route exists. Telegram will use POST here.",
+        }
+    )
+
+
 @app.route("/telegram/webhook", methods=["POST"])
 def telegram_webhook():
     if TELEGRAM_SECRET_TOKEN:
@@ -927,6 +1273,7 @@ def telegram_webhook():
 
     except Exception as e:
         print("ERROR:", str(e))
+        traceback.print_exc()
 
         save_request(
             "server_error",
