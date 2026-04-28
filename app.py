@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request
 from openai import OpenAI
 
 load_dotenv()
@@ -24,6 +24,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "")
+TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
 
 CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
 
@@ -226,54 +227,21 @@ KNOWN_INTENTS: Dict[str, List[str]] = {
 }
 
 STOP_WORDS = {
-    "is",
-    "was",
-    "are",
-    "am",
-    "be",
-    "been",
-    "do",
-    "does",
-    "did",
-    "can",
-    "could",
-    "will",
-    "would",
-    "should",
-    "a",
-    "an",
-    "the",
-    "to",
-    "for",
-    "of",
-    "in",
-    "on",
-    "at",
-    "i",
-    "you",
-    "me",
-    "my",
-    "your",
-    "our",
-    "what",
-    "where",
-    "when",
-    "how",
-    "why",
-    "please",
-    "pls",
-    "ah",
-    "lah",
-    "leh",
-    "anot",
-    "tell",
-    "say",
-    "know",
+    "is", "was", "are", "am", "be", "been",
+    "do", "does", "did",
+    "can", "could", "will", "would", "should",
+    "a", "an", "the",
+    "to", "for", "of", "in", "on", "at",
+    "i", "you", "me", "my", "your", "our",
+    "what", "where", "when", "how", "why",
+    "please", "pls",
+    "ah", "lah", "leh", "anot",
+    "tell", "say", "know",
 }
 
 
 # =========================
-# KNOWLEDGE LOADING
+# KNOWLEDGE
 # =========================
 
 def load_knowledge_text() -> str:
@@ -329,33 +297,18 @@ STUDIOS = parse_studios(KNOWLEDGE_TEXT)
 
 if not STUDIOS:
     STUDIOS = [
-        {
-            "name": "Alexandra",
-            "address": "456 Alexandra Rd, #02-03, Singapore 119962",
-        },
-        {
-            "name": "Katong",
-            "address": "131 E Coast Rd, #03-01, Singapore 428816",
-        },
-        {
-            "name": "Kovan",
-            "address": "1F Yio Chu Kang Rd, Singapore 545512",
-        },
-        {
-            "name": "Upper Bukit Timah",
-            "address": "816 Upper Bukit Timah Road, Singapore 678149",
-        },
-        {
-            "name": "Woodlands",
-            "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713",
-        },
+        {"name": "Alexandra", "address": "456 Alexandra Rd, #02-03, Singapore 119962"},
+        {"name": "Katong", "address": "131 E Coast Rd, #03-01, Singapore 428816"},
+        {"name": "Kovan", "address": "1F Yio Chu Kang Rd, Singapore 545512"},
+        {"name": "Upper Bukit Timah", "address": "816 Upper Bukit Timah Road, Singapore 678149"},
+        {"name": "Woodlands", "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713"},
     ]
 
 KNOWN_STUDIOS = [studio["name"] for studio in STUDIOS]
 
 
 # =========================
-# HELPER FUNCTIONS
+# HELPERS
 # =========================
 
 def normalize(text: str) -> str:
@@ -401,11 +354,7 @@ def add_history(chat_id: str, role: str, content: str) -> None:
     CHAT_HISTORY[chat_id] = CHAT_HISTORY[chat_id][-14:]
 
 
-def best_fuzzy_match(
-    text: str,
-    choices: List[str],
-    cutoff: float = 0.72,
-) -> Optional[str]:
+def best_fuzzy_match(text: str, choices: List[str], cutoff: float = 0.72) -> Optional[str]:
     matches = get_close_matches(
         text.lower(),
         [choice.lower() for choice in choices],
@@ -539,7 +488,6 @@ def is_menu_request(text: str) -> bool:
 def is_opt_out_request(text: str) -> bool:
     t = normalize(text)
 
-    # Important: "stop membership" should mean membership suspension, not Telegram opt-out.
     if t in OPT_OUT_WORDS:
         return True
 
@@ -586,7 +534,6 @@ def is_handoff_request(text: str) -> bool:
 
 
 def is_jal_yoga_related(chat_id: str, text: str) -> bool:
-    # During active flow, short replies such as names, goals, PROCEED, SKIP, or studio choices are allowed.
     if CHAT_HISTORY.get(chat_id):
         return True
 
@@ -650,11 +597,7 @@ def customer_service_reply() -> str:
 # OPENAI BOT BRAIN
 # =========================
 
-def ask_llm(
-    chat_id: str,
-    user_text: str,
-    history_user_text: Optional[str] = None,
-) -> str:
+def ask_llm(chat_id: str, user_text: str, history_user_text: Optional[str] = None) -> str:
     if not OPENAI_API_KEY:
         return (
             "I’m sorry — the AI answer service is not configured yet.\n"
@@ -775,13 +718,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         save_opt_out_users()
         reset_history(chat_id)
 
-        save_request(
-            "user_opted_out",
-            chat_id,
-            {
-                "user_message": clean_text,
-            },
-        )
+        save_request("user_opted_out", chat_id, {"user_message": clean_text})
 
         return (
             "Noted — you have been unsubscribed and will not receive follow-up messages.\n"
@@ -792,13 +729,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         OPT_OUT_USERS.discard(chat_id)
         save_opt_out_users()
 
-        save_request(
-            "user_opted_in",
-            chat_id,
-            {
-                "user_message": clean_text,
-            },
-        )
+        save_request("user_opted_in", chat_id, {"user_message": clean_text})
 
         return "Welcome back — you are subscribed again. Type MENU to see Jal Yoga options."
 
@@ -806,13 +737,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         return "You have opted out. Reply START if you want to chat with Jal Yoga again."
 
     if contains_sensitive_keyword(clean_text):
-        save_request(
-            "sensitive_info_blocked",
-            chat_id,
-            {
-                "preview": clean_text[:120],
-            },
-        )
+        save_request("sensitive_info_blocked", chat_id, {"preview": clean_text[:120]})
 
         return (
             "For your safety, please do not share NRIC, passport numbers, card numbers, CVV, OTP, "
@@ -843,21 +768,11 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_handoff_request(clean_text):
         reset_history(chat_id)
 
-        save_request(
-            "customer_service_handoff",
-            chat_id,
-            {
-                "user_message": clean_text,
-            },
-        )
+        save_request("customer_service_handoff", chat_id, {"user_message": clean_text})
 
         return customer_service_reply()
 
-    answer = ask_llm(
-        chat_id,
-        enriched_text,
-        history_user_text=clean_text,
-    )
+    answer = ask_llm(chat_id, enriched_text, history_user_text=clean_text)
 
     if "[HANDOFF]" in answer:
         clean_answer = strip_handoff_token(answer)
@@ -918,11 +833,7 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
             "disable_web_page_preview": False,
         }
 
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=30,
-        )
+        response = requests.post(url, json=payload, timeout=30)
 
         print("TELEGRAM SEND STATUS:", response.status_code)
         print("TELEGRAM SEND RESPONSE:", response.text)
@@ -938,11 +849,23 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify(
-        {
-            "status": "ok",
-            "message": "Jal Yoga Telegram bot is running.",
-        }
+    telegram_link = "#"
+
+    if TELEGRAM_BOT_USERNAME:
+        username = TELEGRAM_BOT_USERNAME.replace("@", "").strip()
+        telegram_link = f"https://t.me/{username}"
+
+    whatsapp_link = "#"
+
+    if CUSTOMER_SERVICE_WHATSAPP_NUMBER:
+        number = CUSTOMER_SERVICE_WHATSAPP_NUMBER.replace("+", "").replace(" ", "")
+        whatsapp_link = f"https://wa.me/{number}"
+
+    return render_template(
+        "index.html",
+        telegram_link=telegram_link,
+        whatsapp_link=whatsapp_link,
+        studios=STUDIOS,
     )
 
 
@@ -972,23 +895,13 @@ def telegram_webhook():
     message = update.get("message") or update.get("edited_message")
 
     if not message:
-        return jsonify(
-            {
-                "status": "ignored",
-                "reason": "no message",
-            }
-        ), 200
+        return jsonify({"status": "ignored", "reason": "no message"}), 200
 
     chat = message.get("chat", {})
     chat_id = str(chat.get("id", ""))
 
     if not chat_id:
-        return jsonify(
-            {
-                "status": "ignored",
-                "reason": "no chat id",
-            }
-        ), 200
+        return jsonify({"status": "ignored", "reason": "no chat id"}), 200
 
     user_text = message.get("text", "")
 
@@ -1027,17 +940,9 @@ def telegram_webhook():
     return jsonify({"status": "ok"}), 200
 
 
-# =========================
-# LOCAL TEST HELPER
-# =========================
-
 def build_bot_reply(chat_id: str, user_text: str) -> str:
     return process_message(chat_id, user_text)
 
-
-# =========================
-# RUN APP
-# =========================
 
 if __name__ == "__main__":
     app.run(
