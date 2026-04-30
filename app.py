@@ -266,13 +266,19 @@ def strip_handoff_token(text: str) -> str:
 
 
 def clean_number(number: str) -> str:
-    return number.replace("+", "").replace(" ", "").strip()
+    return (
+        str(number)
+        .replace("+", "")
+        .replace(" ", "")
+        .replace("-", "")
+        .strip()
+    )
 
 
 def customer_service_link() -> str:
     number = clean_number(CUSTOMER_SERVICE_WHATSAPP_NUMBER)
 
-    if not number:
+    if not number or number.upper() == "TBC":
         return ""
 
     return f"https://wa.me/{number}"
@@ -316,7 +322,7 @@ def detect_outlet_from_text(text: str) -> str:
 def build_prefilled_whatsapp_link(number: str, message: str) -> str:
     clean = clean_number(number)
 
-    if not clean:
+    if not clean or clean.upper() == "TBC":
         return ""
 
     encoded_message = quote(message, safe="")
@@ -342,6 +348,73 @@ def customer_service_prefilled_link(user_text: str, summary_text: str) -> str:
     )
 
     return build_prefilled_whatsapp_link(selected_number, prefilled_message)
+
+
+# =========================
+# NEW: DIRECT OUTLET CONTACT FORMAT
+# =========================
+
+def get_studio_address(outlet_name: str) -> str:
+    for studio in STUDIOS:
+        if studio["name"].lower() == outlet_name.lower():
+            return studio["address"]
+
+    return ""
+
+
+def is_outlet_contact_request(text: str) -> bool:
+    t = normalize(text)
+    tokens = set(t.split())
+
+    contact_words = [
+        "contact",
+        "contact number",
+        "phone",
+        "phone number",
+        "number",
+        "whatsapp",
+        "whatsapp number",
+        "call",
+        "telephone",
+        "hotline",
+        "wa number",
+    ]
+
+    if "wa" in tokens:
+        return True
+
+    return any(word in t for word in contact_words)
+
+
+def build_outlet_contact_reply(user_text: str) -> str:
+    outlet = detect_outlet_from_text(user_text)
+
+    if not outlet:
+        return ""
+
+    if not is_outlet_contact_request(user_text):
+        return ""
+
+    number = outlet_whatsapp_numbers().get(outlet, "")
+
+    if not number or clean_number(number).upper() == "TBC":
+        number = CUSTOMER_SERVICE_WHATSAPP_NUMBER
+
+    clean = clean_number(number)
+
+    if not clean or clean.upper() == "TBC":
+        return ""
+
+    address = get_studio_address(outlet)
+    whatsapp_link = f"https://wa.me/{clean}"
+
+    return (
+        f"{outlet} outlet contact:\n"
+        f"+{clean}\n"
+        f"{whatsapp_link}\n\n"
+        f"Address:\n"
+        f"{address}"
+    )
 
 
 def live_contact_config_text() -> str:
@@ -616,6 +689,14 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     if is_reset_request(clean_text):
         reset_history(chat_id)
+
+    # NEW:
+    # This makes outlet contact replies always follow your screenshot style.
+    # Example user message: "katong contact"
+    outlet_contact_reply = build_outlet_contact_reply(clean_text)
+
+    if outlet_contact_reply:
+        return outlet_contact_reply + "\n\nReply MENU to return to the main menu."
 
     answer = ask_llm(chat_id, clean_text)
 
