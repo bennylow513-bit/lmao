@@ -5,3 +5,6 @@ requests
 openai
 pymupdf
 watchdog
+python-docx
+openpyxl
+python-pptx
