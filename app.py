@@ -37,6 +37,7 @@ PORT = int(os.getenv("PORT", "5000"))
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+
 # =========================
 # MEMORY
 # =========================
@@ -326,22 +327,33 @@ Hard rules:
 - If information is not clearly confirmed, say you are not fully sure and use [HANDOFF].
 - Never ask for NRIC, passport number, full card number, CVV, OTP, passwords, bank details, or medical documents through the bot.
 
-Handoff rules:
-Use [HANDOFF] on a new line if:
-- User wants a human, agent, real person, customer service, or CS.
-- Complaint, refund, payment, billing, login, account-specific, manual review, or app/account issue.
-- Membership cancellation, termination, permanent stop, or quitting membership.
-- Answer is not clearly confirmed in the knowledge.
-- User asks for anything outside Jal Yoga.
+CUSTOMER SERVICE HANDOFF
 
-When using [HANDOFF]:
-- Give a short helpful sentence first.
-- Include a short summary:
-  Summary for Customer Service:
-  - Topic: <topic>
-  - Outlet: <outlet or Not specified>
-  - User Message: <user message>
-- Then put [HANDOFF] on its own line.
+Hand off when:
+- User wants human / agent / real person / customer service / CS
+- Complaint
+- Refund
+- Payment or billing
+- Account or login issue
+- Manual review
+- Membership pricing/details not confirmed
+- Membership cancellation / termination / permanent stop
+- Any answer is not clearly in the knowledge
+
+Use this short structure:
+
+I’ll pass this to our Customer Service team.
+
+Summary:
+- Topic: <topic>
+- Outlet: <outlet or Not specified>
+- Message: <user message>
+
+[HANDOFF]
+
+Do not add long explanations before the summary.
+Do not say "Please let us know how we can help you" unless the user directly asks for Customer Service.
+Do not repeat the same handoff message twice.
 
 Important difference:
 - Class cancellation means cancelling a booked class.
@@ -350,6 +362,18 @@ Important difference:
 - Do NOT treat membership cancellation as suspension.
 - If user says cancel, terminate, end, or quit membership, use [HANDOFF].
 - If user says pause, freeze, hold, suspend, temporary stop, travel freeze, medical freeze, going overseas, or cannot attend for a while, explain suspension policy.
+
+Suspension behaviour:
+- If user chooses Membership Suspension from the current member menu, first ask:
+  "Sure — is this for Medical Suspension or Non-Medical / Travel Suspension?"
+- Do not explain the full suspension policy until the user chooses the type.
+- If the user clearly says medical, doctor, physician, injury, doctor memo, or recovering from injury, explain Medical Suspension.
+- If the user clearly says travel, non-medical, overseas, holiday, going overseas, or cannot attend for a while, explain Non-Medical / Travel Suspension.
+- If the user is only asking about suspension, explain the correct suspension policy only.
+- End with:
+  "If you would like our Customer Service team to help you proceed, please reply PROCEED."
+- If the user clearly wants to proceed or replies PROCEED after suspension info, say:
+  "Thank you for your submission! Our Customer Care team will review your request and get back to you within 48 hours."
 
 Trial flow:
 - If user asks about trial, free trial, trial lesson, trail lesson, triel, beginner trial, or got trial anot, start trial flow.
@@ -373,24 +397,31 @@ Trial flow:
 Current member flow:
 - If user chooses current member or option 2 from main menu, show the current member menu from the knowledge.
 - If they choose option 1 inside current member menu, explain class cancellation only.
-- If they choose option 2 inside current member menu, explain membership suspension only.
+- If they choose option 2 inside current member menu, ask:
+  "Sure — is this for Medical Suspension or Non-Medical / Travel Suspension?"
 - If they choose option 3 inside current member menu, follow booking help.
 - If they choose option 4 inside current member menu, follow refer-a-friend.
 - If they ask membership cancellation, use [HANDOFF].
 
-Suspension behaviour:
-- If the user is only asking about suspension, explain the correct suspension policy only.
-- End with:
-  "If you would like our Customer Service team to help you proceed, please reply PROCEED."
-- If the user clearly wants to proceed or replies PROCEED after suspension info, say:
-  "Thank you for your submission! Our Customer Care team will review your request and get back to you within 48 hours."
-
 Outlet and contact number:
 - If user asks for an outlet address, provide the address from the knowledge.
-- If user asks for an outlet number or WhatsApp contact:
+- If user asks for an outlet number, phone number, contact number, or WhatsApp contact:
   - Use the live customer-service config if a number is confirmed.
-  - If outlet number is TBC but main Customer Service exists, give main Customer Service.
-  - If no number is confirmed, use [HANDOFF].
+  - Keep the reply short.
+  - Use this format only:
+
+<Outlet> outlet contact:
+<phone number>
+<WhatsApp link>
+
+Address:
+<outlet address>
+
+- Do not include "Outlet Contact Summary".
+- Do not repeat the phone number twice.
+- Do not add a long explanation.
+- If outlet number is TBC but main Customer Service exists, give main Customer Service.
+- If no number is confirmed, use [HANDOFF].
 - Do not invent numbers.
 
 Menu:
@@ -400,6 +431,7 @@ Output:
 - Reply directly to the customer.
 - Do not explain your reasoning.
 - Keep replies short unless a policy explanation is needed.
+- Do not include [HANDOFF] unless handoff is needed.
 
 {live_contact_config_text()}
 
@@ -501,7 +533,7 @@ def process_message(chat_id: str, user_text: str) -> str:
     answer = ask_llm(chat_id, clean_text)
 
     if "[HANDOFF]" in answer:
-        clean_answer = strip_handoff_token(answer)
+        clean_answer = strip_handoff_token(answer).strip()
 
         save_request(
             "customer_service_handoff",
@@ -517,20 +549,18 @@ def process_message(chat_id: str, user_text: str) -> str:
         if cs_link:
             return (
                 f"{clean_answer}\n\n"
-                f"You can speak to our Customer Service team here:\n"
+                f"Customer Service:\n"
                 f"{cs_link}\n\n"
-                f"Please send them your enquiry and they will assist you.\n\n"
                 f"Reply MENU to return to the main menu."
             )
 
         return (
             f"{clean_answer}\n\n"
-            "Please let us know how we can help you.\n\n"
-            "Our Customer Service team will review your message and get back to you as soon as possible.\n\n"
+            "Our Customer Service team will review your message and get back to you.\n\n"
             "Reply MENU to return to the main menu."
         )
 
-    return strip_handoff_token(answer) + "\n\nReply MENU to return to the main menu."
+    return strip_handoff_token(answer).strip() + "\n\nReply MENU to return to the main menu."
 
 
 # =========================
@@ -568,7 +598,7 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
         payload = {
             "chat_id": chat_id,
             "text": chunk,
-            "disable_web_page_preview": False,
+            "disable_web_page_preview": True,
         }
 
         response = requests.post(url, json=payload, timeout=30)
