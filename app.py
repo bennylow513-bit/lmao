@@ -29,7 +29,6 @@ TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
 
 CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
 
-# Optional outlet-specific WhatsApp numbers
 ALEXANDRA_WHATSAPP_NUMBER = os.getenv("ALEXANDRA_WHATSAPP_NUMBER", "")
 KATONG_WHATSAPP_NUMBER = os.getenv("KATONG_WHATSAPP_NUMBER", "")
 KOVAN_WHATSAPP_NUMBER = os.getenv("KOVAN_WHATSAPP_NUMBER", "")
@@ -45,6 +44,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # =========================
 
 CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
+TRIAL_STATES: Dict[str, Dict[str, str]] = {}
 
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
 
@@ -151,12 +151,18 @@ JAL_YOGA_GENERAL_KEYWORDS = {
     "service",
     "human",
     "agent",
+    "number",
+    "phone",
+    "contact",
+    "whatsapp",
+    "call",
 
     # Chinese
     "瑜伽",
     "试课",
-    "課程",
+    "試課",
     "课程",
+    "課程",
     "会员",
     "會員",
     "地址",
@@ -206,6 +212,7 @@ KNOWN_INTENTS: Dict[str, List[str]] = {
         "triel",
         "free lesson",
         "got trial",
+        "schedule a trial",
     ],
 
     "membership_info": [
@@ -338,6 +345,7 @@ STOP_WORDS = {
 def load_knowledge_text() -> str:
     for filename in (
         "knowledge.txt",
+        "knowledge(9).txt",
         "knowledge(8).txt",
         "knowledge(6).txt",
         "knowledge(1).txt",
@@ -354,37 +362,38 @@ def load_knowledge_text() -> str:
 KNOWLEDGE_TEXT = load_knowledge_text()
 
 
-def extract_section(title: str, text: str) -> str:
-    pattern = rf"(?ms)^{re.escape(title)}\s*\n(.*?)(?=^[A-Z][A-Z /&()'\-]+$|\Z)"
-    match = re.search(pattern, text)
-    return match.group(1).strip() if match else ""
-
-
-def extract_bullets(section_text: str) -> List[str]:
-    items: List[str] = []
-
-    for line in section_text.splitlines():
-        line = line.strip()
-
-        if line.startswith("- "):
-            items.append(line[2:].strip())
-
-    return items
-
-
 def parse_studios(text: str) -> List[Dict[str, str]]:
-    section = extract_section("STUDIOS", text)
+    studio_names = [
+        "Alexandra",
+        "Katong",
+        "Kovan",
+        "Upper Bukit Timah",
+        "Woodlands",
+    ]
+
     studios: List[Dict[str, str]] = []
 
-    for item in extract_bullets(section):
-        if ":" in item:
-            name, address = item.split(":", 1)
-            studios.append(
-                {
-                    "name": name.strip(),
-                    "address": address.strip(),
-                }
-            )
+    for line in text.splitlines():
+        line = line.strip()
+
+        if not line.startswith("- "):
+            continue
+
+        clean_line = line[2:].strip()
+
+        for studio_name in studio_names:
+            prefix = studio_name + ":"
+
+            if clean_line.lower().startswith(prefix.lower()):
+                address = clean_line.split(":", 1)[1].strip()
+
+                if not any(s["name"] == studio_name for s in studios):
+                    studios.append(
+                        {
+                            "name": studio_name,
+                            "address": address,
+                        }
+                    )
 
     return studios
 
@@ -434,6 +443,7 @@ def save_request(kind: str, chat_id: str, payload: Dict[str, Any]) -> None:
 
 def reset_history(chat_id: str) -> None:
     CHAT_HISTORY.pop(chat_id, None)
+    TRIAL_STATES.pop(chat_id, None)
 
 
 def add_history(chat_id: str, role: str, content: str) -> None:
@@ -565,32 +575,6 @@ def detect_intent_from_text(text: str) -> Tuple[Optional[str], float]:
     return None, 0.0
 
 
-def enrich_user_text_for_llm(text: str) -> str:
-    original = text or ""
-
-    studio, studio_score = detect_studio_from_text(original)
-    intent, intent_score = detect_intent_from_text(original)
-    topic = detect_handoff_topic(original)
-
-    hints = []
-
-    if studio and studio_score >= 0.72:
-        hints.append(f"Detected studio: {studio}")
-
-    if intent and intent_score >= 0.72:
-        hints.append(f"Detected intent: {intent}")
-
-    if topic:
-        hints.append(f"Detected topic: {topic['topic_label']}")
-
-    if not hints:
-        return original
-
-    return original + "\n\nSYSTEM HINTS:\n" + "\n".join(
-        f"- {hint}" for hint in hints
-    )
-
-
 def is_menu_request(text: str) -> bool:
     return normalize(text) in {
         "menu",
@@ -657,6 +641,9 @@ def is_jal_yoga_related(chat_id: str, text: str) -> bool:
     if CHAT_HISTORY.get(chat_id):
         return True
 
+    if TRIAL_STATES.get(chat_id):
+        return True
+
     t = normalize(text)
 
     if not t:
@@ -697,7 +684,7 @@ def strip_handoff_token(text: str) -> str:
 
 
 # =========================
-# UNIVERSAL HANDOFF DETECTION
+# CUSTOMER SERVICE / OUTLET NUMBER
 # =========================
 
 def get_studio_address(studio_name: str) -> str:
@@ -719,6 +706,80 @@ OUTLET_CONTACTS = {
 def make_wa_link(number: str) -> str:
     clean_number = number.replace("+", "").replace(" ", "").strip()
     return f"https://wa.me/{clean_number}" if clean_number else ""
+
+
+def is_phone_number_request(text: str) -> bool:
+    t = normalize(text)
+
+    keywords = [
+        "number",
+        "phone",
+        "contact",
+        "whatsapp",
+        "call",
+        "tel",
+        "telephone",
+        "mobile",
+        "hp",
+    ]
+
+    return any(keyword in t for keyword in keywords)
+
+
+def outlet_number_reply(text: str) -> Optional[str]:
+    if not is_phone_number_request(text):
+        return None
+
+    detected_studio, studio_score = detect_studio_from_text(text)
+
+    if not detected_studio or studio_score < 0.72:
+        return (
+            "Outlet Contact Summary:\n"
+            "- Outlet: Not specified\n"
+            "- Request: Outlet contact number\n\n"
+            "Which outlet number would you like? Alexandra, Katong, Kovan, Upper Bukit Timah, or Woodlands?"
+        )
+
+    outlet_number = OUTLET_CONTACTS.get(detected_studio, "")
+    address = get_studio_address(detected_studio)
+
+    if outlet_number:
+        clean_number = outlet_number.replace("+", "").replace(" ", "").strip()
+
+        return (
+            "Outlet Contact Summary:\n"
+            f"- Outlet: {detected_studio}\n"
+            f"- Contact Number: +{clean_number}\n"
+            f"- WhatsApp Link: https://wa.me/{clean_number}\n"
+            f"- Address: {address}\n\n"
+            f"{detected_studio} outlet contact:\n"
+            f"+{clean_number}\n"
+            f"https://wa.me/{clean_number}"
+        )
+
+    if CUSTOMER_SERVICE_WHATSAPP_NUMBER:
+        main_number = CUSTOMER_SERVICE_WHATSAPP_NUMBER.replace("+", "").replace(" ", "").strip()
+
+        return (
+            "Outlet Contact Summary:\n"
+            f"- Outlet: {detected_studio}\n"
+            "- Specific Outlet Number: Not confirmed\n"
+            f"- Address: {address}\n"
+            f"- Main Customer Service: +{main_number}\n\n"
+            f"I do not have a confirmed specific number for {detected_studio}, "
+            f"so please contact our main Customer Service team here:\n"
+            f"+{main_number}\n"
+            f"https://wa.me/{main_number}"
+        )
+
+    return (
+        "Outlet Contact Summary:\n"
+        f"- Outlet: {detected_studio}\n"
+        "- Specific Outlet Number: Not confirmed\n"
+        f"- Address: {address}\n\n"
+        "I do not have a confirmed phone number for this outlet yet. "
+        "I’ll pass this to our Customer Service team."
+    )
 
 
 def detect_handoff_topic(text: str) -> Dict[str, str]:
@@ -805,6 +866,11 @@ def detect_handoff_topic(text: str) -> Dict[str, str]:
             "keywords": ["location", "address", "outlet", "studio", "where is", "where ah"],
         },
         {
+            "key": "phone_number",
+            "label": "Outlet contact number enquiry",
+            "keywords": ["number", "phone", "contact", "whatsapp", "call", "telephone", "mobile"],
+        },
+        {
             "key": "human",
             "label": "Human customer service request",
             "keywords": ["human", "agent", "customer service", "real person", "talk to someone", "speak to someone", "cs"],
@@ -867,6 +933,30 @@ def detect_handoff_context(user_text: str, llm_answer: str = "") -> Dict[str, An
     }
 
 
+def build_handoff_summary(context: Dict[str, Any]) -> str:
+    topic_label = context.get("topic_label", "General Jal Yoga enquiry")
+    studio_name = context.get("detected_studio") or "Not specified"
+    user_message = context.get("user_message", "").strip() or "Not provided"
+
+    address = ""
+
+    if studio_name != "Not specified":
+        address = get_studio_address(studio_name)
+
+    summary = (
+        "Summary for Customer Service:\n"
+        f"- Topic: {topic_label}\n"
+        f"- Outlet: {studio_name}\n"
+    )
+
+    if address:
+        summary += f"- Address: {address}\n"
+
+    summary += f"- User Message: {user_message}"
+
+    return summary
+
+
 def customer_service_reply(context: Optional[Dict[str, Any]] = None) -> str:
     context = context or {}
 
@@ -891,12 +981,14 @@ def customer_service_reply(context: Optional[Dict[str, Any]] = None) -> str:
             )
 
     wa_link = make_wa_link(selected_number)
+    summary = build_handoff_summary(context)
 
     if wa_link:
         return (
             f"I detected your enquiry is about:\n"
             f"{topic_label}"
             f"{address_text}\n\n"
+            f"{summary}\n\n"
             f"You can speak to our Customer Service team here:\n"
             f"{wa_link}\n\n"
             f"Please send them your enquiry and they will assist you."
@@ -906,8 +998,199 @@ def customer_service_reply(context: Optional[Dict[str, Any]] = None) -> str:
         f"I detected your enquiry is about:\n"
         f"{topic_label}"
         f"{address_text}\n\n"
+        f"{summary}\n\n"
         "Please let us know how we can help you.\n\n"
         "Our Customer Service team will review your message and get back to you as soon as possible."
+    )
+
+
+# =========================
+# TRIAL FLOW
+# =========================
+
+BAD_NAME_WORDS = {
+    "fuck",
+    "fucking",
+    "shit",
+    "cb",
+    "knn",
+    "ccb",
+}
+
+
+def contains_bad_name_word(text: str) -> bool:
+    words = set(normalize(text).split())
+    return bool(words & BAD_NAME_WORDS)
+
+
+def is_valid_fitness_goal(text: str) -> bool:
+    cleaned = text.strip()
+
+    if not cleaned:
+        return False
+
+    if re.fullmatch(r"\d+(\.\d+)?", cleaned):
+        return True
+
+    if re.search(r"\d+(\.\d+)?", cleaned):
+        return True
+
+    if len(cleaned) >= 2:
+        return True
+
+    return False
+
+
+def studio_options_text() -> str:
+    return "Alexandra, Katong, Kovan, Upper Bukit Timah, or Woodlands"
+
+
+def is_trial_request(text: str) -> bool:
+    intent, score = detect_intent_from_text(text)
+    return intent == "trial" and score >= 0.72
+
+
+def handle_trial_flow(chat_id: str, clean_text: str) -> Optional[str]:
+    text = clean_text.strip()
+
+    if is_menu_request(text):
+        TRIAL_STATES.pop(chat_id, None)
+        return None
+
+    state = TRIAL_STATES.get(chat_id)
+
+    if state is None and not is_trial_request(text):
+        return None
+
+    if state is None:
+        state = {
+            "step": "studio",
+            "studio": "",
+            "name": "",
+            "goal": "",
+        }
+
+        TRIAL_STATES[chat_id] = state
+
+        detected_studio, studio_score = detect_studio_from_text(text)
+
+        if detected_studio and studio_score >= 0.72:
+            state["studio"] = detected_studio
+            state["step"] = "name"
+            return "Got it. May I have your Full Name?"
+
+        return (
+            "We’d love to have you! Which studio would you like to visit? "
+            f"{studio_options_text()}?"
+        )
+
+    detected_studio, studio_score = detect_studio_from_text(text)
+
+    if detected_studio and studio_score >= 0.85 and any(
+        word in normalize(text)
+        for word in ["actually", "change", "switch", "woodlands", "katong", "kovan", "alexandra", "bukit"]
+    ):
+        state["studio"] = detected_studio
+
+        if state["step"] == "studio":
+            state["step"] = "name"
+
+        if state["step"] == "name":
+            return "Sure! Got it. May I have your Full Name?"
+
+        if state["step"] == "goal":
+            return (
+                "Sure, I’ve updated the outlet. And finally, what is your Fitness Goal? "
+                "You may use words or numbers, for example: flexibility, weight loss, 55, or 55.5."
+            )
+
+    if state["step"] == "studio":
+        detected_studio, studio_score = detect_studio_from_text(text)
+
+        if detected_studio and studio_score >= 0.72:
+            state["studio"] = detected_studio
+            state["step"] = "name"
+            return "Got it. May I have your Full Name?"
+
+        return (
+            "Sorry, which studio would you like to visit? "
+            f"{studio_options_text()}?"
+        )
+
+    if state["step"] == "name":
+        if len(text) < 2:
+            return "May I have your Full Name, please?"
+
+        if contains_bad_name_word(text):
+            return "Please provide your full name without inappropriate words."
+
+        state["name"] = text
+        state["step"] = "goal"
+
+        return (
+            "And finally, what is your Fitness Goal? "
+            "You may use words or numbers, for example: flexibility, weight loss, 55, or 55.5."
+        )
+
+    if state["step"] == "goal":
+        if not is_valid_fitness_goal(text):
+            return (
+                "Could you share your Fitness Goal, please? "
+                "You may use words or numbers, for example: flexibility, weight loss, 55, or 55.5."
+            )
+
+        if contains_bad_name_word(text):
+            return "Please share your fitness goal without inappropriate words."
+
+        state["goal"] = text
+
+        studio = state["studio"]
+        name = state["name"]
+        goal = state["goal"]
+
+        TRIAL_STATES.pop(chat_id, None)
+
+        return (
+            "Trial Booking Summary:\n"
+            f"- Outlet: {studio}\n"
+            f"- Class: Trial Class\n"
+            f"- Name: {name}\n"
+            f"- Fitness Goal: {goal}\n\n"
+            f"Thank you! I've sent your details to the {studio} team. "
+            f"Our Studio Manager will contact you within 24 hours to schedule your trial."
+        )
+
+    TRIAL_STATES.pop(chat_id, None)
+    return None
+
+
+# =========================
+# LLM ENRICHMENT
+# =========================
+
+def enrich_user_text_for_llm(text: str) -> str:
+    original = text or ""
+
+    studio, studio_score = detect_studio_from_text(original)
+    intent, intent_score = detect_intent_from_text(original)
+    topic = detect_handoff_topic(original)
+
+    hints = []
+
+    if studio and studio_score >= 0.72:
+        hints.append(f"Detected studio: {studio}")
+
+    if intent and intent_score >= 0.72:
+        hints.append(f"Detected intent: {intent}")
+
+    if topic:
+        hints.append(f"Detected topic: {topic['topic_label']}")
+
+    if not hints:
+        return original
+
+    return original + "\n\nSYSTEM HINTS:\n" + "\n".join(
+        f"- {hint}" for hint in hints
     )
 
 
@@ -950,14 +1233,6 @@ Important behavior rules:
 - If the user is only asking for information, explain the policy only.
 - Do not treat a question as a submitted request.
 - Only treat it as a real request if the user clearly says they want to proceed, want help to proceed, want to submit it now, or reply PROCEED.
-- For suspension questions:
-  - if asking only, explain the suspension policy only
-  - then end with: "If you would like our Customer Service team to help you proceed, please reply PROCEED."
-  - only after the user clearly wants to proceed should you say the request will be reviewed
-- For cancellation questions:
-  - if asking only, explain how cancellation works
-  - if the user needs manual help, missed the timing, or has an app/account issue, use [HANDOFF]
-- If the user gives multiple needed details in one message, use them and continue to the next missing step.
 - Do not restart a flow unless the user says MENU, START, HOME, MAIN MENU, or RESTART.
 - Understand common typos, casual phrasing, short forms, and Singapore-style phrasing.
 - Use any SYSTEM HINTS if provided, but only if they make sense with the user's message.
@@ -967,20 +1242,16 @@ Important behavior rules:
 
 Conversation behavior:
 - If the user asks for the menu, show the Jal Yoga main menu from the knowledge.
-- If the user asks about a trial, free trial, trial class, trial lesson, or similar typo, follow the trial flow in the knowledge.
 - If the user asks about studios, outlets, locations, or addresses:
   - If one studio is named, give that studio's address directly.
   - If they ask for all studios or outlets, list all studios with addresses.
   - If they ask about location but do not specify which studio, ask which studio they mean.
 - If the user asks about operating hours, answer directly from the knowledge.
-- If the user is a current member, help using the knowledge for cancellation, suspension, booking help, and refer-a-friend.
 - If the user asks about corporate or partnerships, follow the corporate flow in the knowledge.
 - If the user asks about staff hub, follow the staff hub flow in the knowledge.
-- When a flow is completed, use the appropriate closing style shown in the knowledge.
 - If the user asks for a different language, reply in the same language that the user has used.
 - If the user speaks in English, reply in British English.
 - If the user is rude or insulting, stay calm and professional. Do not insult the user back. If needed, offer customer service handoff.
-- End main menu and follow-up style replies with: "Reply STOP anytime to stop receiving follow-up messages."
 
 Language behavior:
 - Detect the user's language automatically.
@@ -995,14 +1266,8 @@ Language behavior:
 Typo and prediction behavior:
 - The user may type with spelling mistakes, broken English, Singlish, or short forms.
 - Try to infer the likely meaning if it is related to Jal Yoga.
-- Examples:
-  - "differetn tyope of memebership" means "different types of membership"
-  - "katon" means "Katong"
-  - "koven" means "Kovan"
-  - "can talk human katong" means the user wants customer service for Katong outlet
 - If the likely meaning is clear and related to Jal Yoga, answer naturally.
 - If the question asks for information not found in the knowledge, do not invent. Use [HANDOFF].
-- If the user mentions a specific outlet when asking for customer service, keep that outlet name in the handoff response.
 
 Telegram-specific behavior:
 - You are replying inside Telegram, not WhatsApp.
@@ -1085,14 +1350,6 @@ def process_message(chat_id: str, user_text: str) -> str:
             "For account-specific or payment-related help, please type CUSTOMER SERVICE."
         )
 
-    # Do not block immediately.
-    # User may type with spelling mistakes or another language.
-    # Let OpenAI decide whether the message is related to Jal Yoga.
-    if not is_jal_yoga_related(chat_id, clean_text):
-        pass
-
-    enriched_text = enrich_user_text_for_llm(clean_text)
-
     if is_menu_request(clean_text):
         reset_history(chat_id)
 
@@ -1103,6 +1360,16 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
         return strip_handoff_token(answer)
+
+    trial_reply = handle_trial_flow(chat_id, clean_text)
+
+    if trial_reply:
+        return trial_reply + "\n\nReply MENU to return to the main menu."
+
+    number_reply = outlet_number_reply(clean_text)
+
+    if number_reply:
+        return number_reply + "\n\nReply MENU to return to the main menu."
 
     if is_handoff_request(clean_text):
         reset_history(chat_id)
@@ -1116,6 +1383,11 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
         return customer_service_reply(context)
+
+    if not is_jal_yoga_related(chat_id, clean_text):
+        pass
+
+    enriched_text = enrich_user_text_for_llm(clean_text)
 
     answer = ask_llm(chat_id, enriched_text, history_user_text=clean_text)
 
