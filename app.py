@@ -3,6 +3,7 @@ import os
 import traceback
 from datetime import datetime
 from typing import Dict, List
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import requests
@@ -124,11 +125,26 @@ STUDIOS = parse_studios(KNOWLEDGE_TEXT)
 
 if not STUDIOS:
     STUDIOS = [
-        {"name": "Alexandra", "address": "456 Alexandra Rd, #02-03, Singapore 119962"},
-        {"name": "Katong", "address": "131 E Coast Rd, #03-01, Singapore 428816"},
-        {"name": "Kovan", "address": "1F Yio Chu Kang Rd, Singapore 545512"},
-        {"name": "Upper Bukit Timah", "address": "816 Upper Bukit Timah Road, Singapore 678149"},
-        {"name": "Woodlands", "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713"},
+        {
+            "name": "Alexandra",
+            "address": "456 Alexandra Rd, #02-03, Singapore 119962",
+        },
+        {
+            "name": "Katong",
+            "address": "131 E Coast Rd, #03-01, Singapore 428816",
+        },
+        {
+            "name": "Kovan",
+            "address": "1F Yio Chu Kang Rd, Singapore 545512",
+        },
+        {
+            "name": "Upper Bukit Timah",
+            "address": "816 Upper Bukit Timah Road, Singapore 678149",
+        },
+        {
+            "name": "Woodlands",
+            "address": "8 Woodlands Sq, #04-12/13 Wood Square, Solo 2, Singapore 737713",
+        },
     ]
 
 
@@ -262,6 +278,72 @@ def customer_service_link() -> str:
     return f"https://wa.me/{number}"
 
 
+def outlet_whatsapp_numbers() -> Dict[str, str]:
+    return {
+        "Alexandra": ALEXANDRA_WHATSAPP_NUMBER,
+        "Katong": KATONG_WHATSAPP_NUMBER,
+        "Kovan": KOVAN_WHATSAPP_NUMBER,
+        "Upper Bukit Timah": UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER,
+        "Woodlands": WOODLANDS_WHATSAPP_NUMBER,
+    }
+
+
+def detect_outlet_from_text(text: str) -> str:
+    t = normalize(text)
+
+    outlet_aliases = {
+        "upper bukit timah": "Upper Bukit Timah",
+        "bukit timah": "Upper Bukit Timah",
+        "bukit timmah": "Upper Bukit Timah",
+        "ubt": "Upper Bukit Timah",
+        "alexandra": "Alexandra",
+        "alex": "Alexandra",
+        "katong": "Katong",
+        "katon": "Katong",
+        "kovan": "Kovan",
+        "koven": "Kovan",
+        "woodlands": "Woodlands",
+        "woodland": "Woodlands",
+    }
+
+    for alias, outlet in outlet_aliases.items():
+        if alias in t:
+            return outlet
+
+    return ""
+
+
+def build_prefilled_whatsapp_link(number: str, message: str) -> str:
+    clean = clean_number(number)
+
+    if not clean:
+        return ""
+
+    encoded_message = quote(message, safe="")
+    return f"https://wa.me/{clean}?text={encoded_message}"
+
+
+def customer_service_prefilled_link(user_text: str, summary_text: str) -> str:
+    detected_outlet = detect_outlet_from_text(user_text + "\n" + summary_text)
+
+    selected_number = ""
+
+    if detected_outlet:
+        selected_number = outlet_whatsapp_numbers().get(detected_outlet, "")
+
+    if not selected_number:
+        selected_number = CUSTOMER_SERVICE_WHATSAPP_NUMBER
+
+    prefilled_message = (
+        "Hello Jal Yoga Customer Service,\n\n"
+        "I need help with this enquiry:\n\n"
+        f"{summary_text}\n\n"
+        "Thank you."
+    )
+
+    return build_prefilled_whatsapp_link(selected_number, prefilled_message)
+
+
 def live_contact_config_text() -> str:
     return f"""
 LIVE CUSTOMER SERVICE CONFIG FROM RENDER
@@ -280,6 +362,7 @@ Rules:
 - You may use these numbers only if they are not TBC.
 - If an outlet number is TBC, do not invent it.
 - If main Customer Service is available, use the main Customer Service link for handoff.
+- For handoff, the app will create a WhatsApp link with the summary prefilled.
 """
 
 
@@ -354,6 +437,10 @@ Summary:
 Do not add long explanations before the summary.
 Do not say "Please let us know how we can help you" unless the user directly asks for Customer Service.
 Do not repeat the same handoff message twice.
+
+The app will add a WhatsApp link after [HANDOFF].
+The WhatsApp link will open with the summary already typed.
+The user still needs to press Send manually.
 
 Important difference:
 - Class cancellation means cancelling a booked class.
@@ -544,13 +631,13 @@ def process_message(chat_id: str, user_text: str) -> str:
             },
         )
 
-        cs_link = customer_service_link()
+        prefilled_link = customer_service_prefilled_link(clean_text, clean_answer)
 
-        if cs_link:
+        if prefilled_link:
             return (
                 f"{clean_answer}\n\n"
-                f"Customer Service:\n"
-                f"{cs_link}\n\n"
+                f"Tap here to send this summary to Customer Service:\n"
+                f"{prefilled_link}\n\n"
                 f"Reply MENU to return to the main menu."
             )
 
