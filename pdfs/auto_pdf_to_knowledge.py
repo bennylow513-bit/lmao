@@ -1,12 +1,13 @@
-import os
 import time
 from datetime import datetime
 from pathlib import Path
 
-import fitz  # pymupdf
+import fitz
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+
+print("SCRIPT STARTED")
 
 PDF_FOLDER = Path("pdfs")
 KNOWLEDGE_FILE = Path("knowledge.txt")
@@ -27,6 +28,8 @@ def save_processed_pdf(filename: str) -> None:
 
 
 def extract_text_from_pdf(pdf_path: Path) -> str:
+    print(f"Reading PDF: {pdf_path}")
+
     text_parts = []
 
     try:
@@ -53,10 +56,8 @@ def clean_text(text: str) -> str:
     for line in text.splitlines():
         line = line.strip()
 
-        if not line:
-            continue
-
-        lines.append(line)
+        if line:
+            lines.append(line)
 
     return "\n".join(lines)
 
@@ -73,7 +74,7 @@ def append_pdf_to_knowledge(pdf_path: Path) -> None:
     raw_text = extract_text_from_pdf(pdf_path)
 
     if not raw_text:
-        print(f"No text found in {pdf_path.name}. It may be a scanned image PDF.")
+        print(f"No text found in {pdf_path.name}. It may be a scanned PDF.")
         return
 
     cleaned_text = clean_text(raw_text)
@@ -106,7 +107,7 @@ END OF AUTO-IMPORTED PDF: {pdf_path.name}
 
     save_processed_pdf(pdf_path.name)
 
-    print(f"Added {pdf_path.name} to knowledge.txt")
+    print(f"Done. Added {pdf_path.name} into knowledge.txt")
 
 
 class PDFHandler(FileSystemEventHandler):
@@ -117,7 +118,7 @@ class PDFHandler(FileSystemEventHandler):
         path = Path(event.src_path)
 
         if path.suffix.lower() == ".pdf":
-            # Wait a few seconds so VS Code finishes copying the file
+            print(f"New PDF detected: {path.name}")
             time.sleep(3)
             append_pdf_to_knowledge(path)
 
@@ -125,7 +126,15 @@ class PDFHandler(FileSystemEventHandler):
 def process_existing_pdfs():
     PDF_FOLDER.mkdir(exist_ok=True)
 
-    for pdf_path in PDF_FOLDER.glob("*.pdf"):
+    pdfs = list(PDF_FOLDER.glob("*.pdf"))
+
+    if not pdfs:
+        print("No PDF found yet in pdfs/ folder.")
+        return
+
+    print(f"Found {len(pdfs)} PDF file(s).")
+
+    for pdf_path in pdfs:
         append_pdf_to_knowledge(pdf_path)
 
 
@@ -148,6 +157,7 @@ def watch_pdf_folder():
             time.sleep(1)
 
     except KeyboardInterrupt:
+        print("Stopping watcher...")
         observer.stop()
 
     observer.join()
