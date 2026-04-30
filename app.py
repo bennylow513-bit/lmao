@@ -45,6 +45,9 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 
+# Stores handoff summaries while waiting for the user to choose outlet
+PENDING_HANDOFFS: Dict[str, Dict[str, str]] = {}
+
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
 
 
@@ -351,7 +354,7 @@ def customer_service_prefilled_link(user_text: str, summary_text: str) -> str:
 
 
 # =========================
-# NEW: DIRECT OUTLET CONTACT FORMAT
+# OUTLET CONTACT FORMAT
 # =========================
 
 def get_studio_address(outlet_name: str) -> str:
@@ -415,6 +418,25 @@ def build_outlet_contact_reply(user_text: str) -> str:
         f"Address:\n"
         f"{address}"
     )
+
+
+def replace_summary_outlet(summary_text: str, outlet: str) -> str:
+    lines = summary_text.splitlines()
+    new_lines = []
+
+    outlet_replaced = False
+
+    for line in lines:
+        if line.strip().lower().startswith("- outlet:"):
+            new_lines.append(f"- Outlet: {outlet}")
+            outlet_replaced = True
+        else:
+            new_lines.append(line)
+
+    if not outlet_replaced:
+        new_lines.append(f"- Outlet: {outlet}")
+
+    return "\n".join(new_lines)
 
 
 def live_contact_config_text() -> str:
@@ -510,6 +532,10 @@ Summary:
 Do not add long explanations before the summary.
 Do not say "Please let us know how we can help you" unless the user directly asks for Customer Service.
 Do not repeat the same handoff message twice.
+
+Important:
+- If [HANDOFF] is used and the outlet is unknown, write "- Outlet: Not specified".
+- The app will ask the user for a specific outlet before sending the WhatsApp Customer Service link.
 
 The app will add a WhatsApp link after [HANDOFF].
 The WhatsApp link will open with the summary already typed.
@@ -640,6 +666,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         OPT_OUT_USERS.add(chat_id)
         save_opt_out_users()
         reset_history(chat_id)
+        PENDING_HANDOFFS.pop(chat_id, None)
 
         save_request(
             "user_opted_out",
@@ -658,6 +685,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         OPT_OUT_USERS.discard(chat_id)
         save_opt_out_users()
         reset_history(chat_id)
+        PENDING_HANDOFFS.pop(chat_id, None)
 
         save_request(
             "user_opted_in",
@@ -689,19 +717,121 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     if is_reset_request(clean_text):
         reset_history(chat_id)
+        PENDING_HANDOFFS.pop(chat_id, None)
 
-    # NEW:
-    # This makes outlet contact replies always follow your screenshot style.
-    # Example user message: "katong contact"
+    # =========================
+    # HANDLE PENDING HANDOFF OUTLET QUESTION
+    # =========================
+
+    if chat_id in PENDING_HANDOFFS:
+        pending = PENDING_HANDOFFS.pop(chat_id)
+
+        selected_outlet = detect_outlet_from_text(clean_text)
+
+        no_outlet_words = {
+            "no",
+            "nope",
+            "none",
+            "not sure",
+            "not specified",
+            "any",
+            "any outlet",
+            "no specific outlet",
+            "dont know",
+            "don't know",
+            "idk",
+            "unsure",
+        }
+
+        if not selected_outlet and normalize(clean_text) not in no_outlet_words:
+            PENDING_HANDOFFS[chat_id] = pending
+
+            return (
+                "Sorry, which outlet is this about?\n\n"
+                "Please reply with one of these:\n"
+                "- Alexandra\n"
+                "- Katong\n"
+                "- Kovan\n"
+                "- Upper Bukit Timah\n"
+                "- Woodlands\n"
+                "- Not specified"
+            )
+
+        outlet_for_summary = selected_outlet if selected_outlet else "Not specified"
+
+        clean_answer = replace_summary_outlet(
+            pending["clean_answer"],
+            outlet_for_summary,
+        )
+
+        save_request(
+            "customer_service_handoff",
+            chat_id,
+            {
+                "user_message": pending["user_message"],
+                "selected_outlet": outlet_for_summary,
+                "llm_answer": clean_answer,
+            },
+        )
+
+        prefilled_link = customer_service_prefilled_link(
+            outlet_for_summary + "\n" + pending["user_message"],
+            clean_answer,
+        )
+
+        if prefilled_link:
+            return (
+                f"{clean_answer}\n\n"
+                f"Tap here to send this summary to Customer Service:\n"
+                f"{prefilled_link}\n\n"
+                f"Reply MENU to return to the main menu."
+            )
+
+        return (
+            f"{clean_answer}\n\n"
+            "Our Customer Service team will review your message and get back to you.\n\n"
+            "Reply MENU to return to the main menu."
+        )
+
+    # =========================
+    # DIRECT OUTLET CONTACT REPLY
+    # =========================
+
     outlet_contact_reply = build_outlet_contact_reply(clean_text)
 
     if outlet_contact_reply:
         return outlet_contact_reply + "\n\nReply MENU to return to the main menu."
 
+    # =========================
+    # ASK LLM
+    # =========================
+
     answer = ask_llm(chat_id, clean_text)
 
     if "[HANDOFF]" in answer:
         clean_answer = strip_handoff_token(answer).strip()
+        detected_outlet = detect_outlet_from_text(clean_text + "\n" + clean_answer)
+
+        # NEW:
+        # If Customer Service handoff is needed but no outlet is mentioned,
+        # ask the user for outlet first.
+        if not detected_outlet:
+            PENDING_HANDOFFS[chat_id] = {
+                "user_message": clean_text,
+                "clean_answer": clean_answer,
+            }
+
+            return (
+                "Before I pass this to our Customer Service team, "
+                "do you have a specific outlet for this enquiry?\n\n"
+                "Please reply with one of these:\n"
+                "- Alexandra\n"
+                "- Katong\n"
+                "- Kovan\n"
+                "- Upper Bukit Timah\n"
+                "- Woodlands\n"
+                "- Not specified"
+            )
 
         save_request(
             "customer_service_handoff",
