@@ -474,6 +474,54 @@ def contains_sensitive_keyword(text: str) -> bool:
     return any(keyword in t for keyword in SENSITIVE_KEYWORDS)
 
 
+def is_class_cancellation_request(text: str) -> bool:
+    t = normalize(text)
+
+    patterns = [
+        r"\b(cancel|cancle|cancell|cancelled|canceled|cancelling|canceling)\b.*\b(class|booking|session|lesson)\b",
+        r"\b(class|booking|session|lesson)\b.*\b(cancel|cancle|cancell|cancelled|canceled|cancelling|canceling)\b",
+        r"\bclass cancellation\b",
+        r"\bcancel class\b",
+        r"\bcancel my class\b",
+        r"\bcancel my booking\b",
+        r"\blate cancellation\b",
+        r"\blate cancel\b",
+        r"\bno show\b",
+        r"\bno-show\b",
+        r"\bmissed my class\b",
+        r"\bi cannot attend\b",
+        r"\bi can't attend\b",
+        r"\bi cant attend\b",
+        r"\bi wana cancel\b",
+        r"\bi wanna cancel\b",
+        r"\bi want cancel\b",
+        r"\bwant to cancel\b",
+        r"\bneed to cancel\b",
+    ]
+
+    return any(re.search(pattern, t, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def class_cancellation_reply(chat_id: str, text: str) -> str:
+    reply = (
+        "Class Cancellation Policy 🙏\n\n"
+        "You can cancel a booked class without penalty up to 2 hours before the class starts.\n\n"
+        "After that:\n"
+        "- Cancellations made less than 2 hours before class are late cancellations\n"
+        "- No-shows are also counted as late cancellations\n"
+        "- After 3 late cancellations, booking access may be suspended for 7 calendar days\n\n"
+        "To cancel a specific booked class, please reply with:\n"
+        "- Outlet\n"
+        "- Class name\n"
+        "- Date and time"
+    )
+
+    add_history(chat_id, "user", text)
+    add_history(chat_id, "assistant", reply)
+
+    return reply
+
+
 def strip_handoff_token(text: str) -> str:
     return text.replace("[HANDOFF]", "").strip()
 
@@ -1063,6 +1111,15 @@ def send_trial_booking_to_outlet(customer_chat_id: str, reply: str) -> None:
         print("TRIAL BOOKING SEND SKIPPED: No outlet detected", flush=True)
         return
 
+    # IMPORTANT:
+    # Save the booking first, even if sending to Telegram fails.
+    # This allows the customer to change name/outlet/goal later.
+    TRIAL_BOOKINGS[customer_chat_id] = {
+        "outlet": outlet,
+        "name": booking.get("name", ""),
+        "fitness_goal": booking.get("fitness_goal", ""),
+    }
+
     target_chat_id = outlet_telegram_chat_id(outlet)
 
     if not target_chat_id:
@@ -1070,6 +1127,24 @@ def send_trial_booking_to_outlet(customer_chat_id: str, reply: str) -> None:
             f"TRIAL BOOKING SEND SKIPPED: Missing Telegram chat ID for outlet={outlet}",
             flush=True,
         )
+
+        if CUSTOMER_SERVICE_TELEGRAM_CHAT_ID:
+            fallback_message = (
+                "New Trial Booking Received 🙏\n\n"
+                "⚠️ Outlet Telegram group is not configured, so this was sent to main Customer Service.\n\n"
+                f"Outlet: {outlet}\n"
+                "Class: Trial Class\n"
+                f"Name: {booking.get('name') or 'Not provided'}\n"
+                f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n\n"
+                f"Customer Telegram Chat ID: {customer_chat_id}"
+            )
+
+            try:
+                send_telegram_message(CUSTOMER_SERVICE_TELEGRAM_CHAT_ID, fallback_message)
+            except Exception as e:
+                print("TRIAL BOOKING FALLBACK SEND ERROR:", str(e), flush=True)
+                traceback.print_exc()
+
         return
 
     message = (
@@ -1085,60 +1160,78 @@ def send_trial_booking_to_outlet(customer_chat_id: str, reply: str) -> None:
     try:
         send_telegram_message(target_chat_id, message)
 
-        TRIAL_BOOKINGS[customer_chat_id] = {
-            "outlet": outlet,
-            "name": booking.get("name", ""),
-            "fitness_goal": booking.get("fitness_goal", ""),
-        }
-
     except Exception as e:
         print("TRIAL BOOKING SEND ERROR:", str(e), flush=True)
         traceback.print_exc()
 
 
 def send_trial_booking_update_to_outlet(customer_chat_id: str, booking: Dict[str, str], old_outlet: str = "") -> bool:
-    outlet = booking.get("outlet", "")
+    new_outlet = booking.get("outlet", "").strip()
 
-    if not outlet:
+    if not new_outlet:
+        print("TRIAL BOOKING UPDATE SKIPPED: No new outlet selected", flush=True)
         return False
 
-    target_chat_id = outlet_telegram_chat_id(outlet)
+    # Send the updated booking to the NEW outlet the customer selected.
+    new_target_chat_id = outlet_telegram_chat_id(new_outlet)
 
-    if not target_chat_id:
-        print(
-            f"TRIAL BOOKING UPDATE SKIPPED: Missing Telegram chat ID for outlet={outlet}",
-            flush=True,
-        )
-        return False
-
-    message = (
+    update_message = (
         "Updated Trial Booking Received 🔄\n\n"
-        f"Outlet: {outlet}\n"
+        f"New Outlet: {new_outlet}\n"
         f"Previous Outlet: {old_outlet or 'Not specified'}\n"
         "Class: Trial Class\n"
         f"Name: {booking.get('name') or 'Not provided'}\n"
         f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n\n"
         f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
-        "If you require further assistance, please use this ID when contacting Customer Service."
+        "Please follow up with this customer using the updated details."
     )
 
+    if not new_target_chat_id:
+        print(
+            f"TRIAL BOOKING UPDATE SKIPPED: Missing Telegram chat ID for NEW outlet={new_outlet}",
+            flush=True,
+        )
+
+        # Fallback: send to main Customer Service if the new outlet group is not configured.
+        if CUSTOMER_SERVICE_TELEGRAM_CHAT_ID:
+            fallback_message = (
+                "Updated Trial Booking Received 🔄\n\n"
+                "⚠️ New outlet Telegram group is not configured, so this was sent to main Customer Service.\n\n"
+                f"New Outlet: {new_outlet}\n"
+                f"Previous Outlet: {old_outlet or 'Not specified'}\n"
+                "Class: Trial Class\n"
+                f"Name: {booking.get('name') or 'Not provided'}\n"
+                f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n\n"
+                f"Customer Telegram Chat ID: {customer_chat_id}"
+            )
+
+            try:
+                send_telegram_message(CUSTOMER_SERVICE_TELEGRAM_CHAT_ID, fallback_message)
+                return True
+            except Exception as e:
+                print("FALLBACK UPDATE SEND ERROR:", str(e), flush=True)
+                traceback.print_exc()
+
+        return False
+
     try:
-        send_telegram_message(target_chat_id, message)
+        send_telegram_message(new_target_chat_id, update_message)
 
-        if old_outlet and old_outlet != outlet:
-            old_chat_id = outlet_telegram_chat_id(old_outlet)
+        # If the old outlet is different, tell the old outlet not to follow up anymore.
+        if old_outlet and old_outlet != new_outlet:
+            old_target_chat_id = outlet_telegram_chat_id(old_outlet)
 
-            if old_chat_id:
+            if old_target_chat_id:
                 old_message = (
                     "Trial Booking Location Changed ⚠️\n\n"
-                    f"Customer has changed outlet from {old_outlet} to {outlet}.\n\n"
+                    f"This customer changed their trial booking from {old_outlet} to {new_outlet}.\n\n"
                     "Please do not follow up on the old outlet booking.\n\n"
                     f"Name: {booking.get('name') or 'Not provided'}\n"
                     f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n"
                     f"Customer Telegram Chat ID: {customer_chat_id}"
                 )
 
-                send_telegram_message(old_chat_id, old_message)
+                send_telegram_message(old_target_chat_id, old_message)
 
         return True
 
@@ -1323,23 +1416,45 @@ def is_trial_update_request(text: str) -> bool:
         "update my trial",
         "change trial",
         "update trial",
-        "change booking",
-        "update booking",
+
         "change my booking",
         "update my booking",
+        "change booking",
+        "update booking",
+
+        "change my outlet",
+        "update my outlet",
+        "switch my outlet",
+        "move my outlet",
         "change outlet",
-        "change location",
-        "change studio",
+        "update outlet",
         "switch outlet",
+        "move outlet",
+
+        "change my location",
+        "update my location",
+        "switch my location",
+        "move my location",
+        "change location",
+        "update location",
         "switch location",
+        "move location",
+
+        "change my studio",
+        "update my studio",
+        "switch my studio",
+        "move my studio",
+        "change studio",
+        "update studio",
         "switch studio",
-        "change to",
-        "move to",
+        "move studio",
+
         "change my name",
         "chnage my name",
         "update my name",
         "change name",
         "update name",
+
         "change my goal",
         "update my goal",
         "change goal",
@@ -1348,18 +1463,48 @@ def is_trial_update_request(text: str) -> bool:
         "update my fitness goal",
         "change fitness goal",
         "update fitness goal",
-        "the name and the outlet",
+
+        "change my location and name",
+        "change my name and location",
+        "change my outlet and name",
+        "change my name and outlet",
+        "change my studio and name",
+        "change my name and studio",
+
+        "update my location and name",
+        "update my name and location",
+        "update my outlet and name",
+        "update my name and outlet",
+        "update my studio and name",
+        "update my name and studio",
+
         "name and outlet",
         "outlet and name",
-        "change name and outlet",
-        "change outlet and name",
-        "update name and outlet",
-        "update outlet and name",
+        "name and location",
+        "location and name",
+        "name and studio",
+        "studio and name",
+
+        "change to",
+        "move to",
+        "switch to",
         "change everything",
         "update everything",
     ]
 
-    return any(phrase in t for phrase in phrases)
+    if any(phrase in t for phrase in phrases):
+        return True
+
+    patterns = [
+        r"\b(change|chnage|update|switch|move)\b.*\b(location|outlet|studio|name|booking|trial|goal|fitness goal)\b",
+        r"\b(location|outlet|studio|name|booking|trial|goal|fitness goal)\b.*\b(change|chnage|update|switch|move)\b",
+        r"\b(name|location|outlet|studio)\b.*\band\b.*\b(name|location|outlet|studio)\b",
+        r"\bchange\s+to\b",
+        r"\bmove\s+to\b",
+        r"\bswitch\s+to\b",
+    ]
+
+    return any(re.search(pattern, t, flags=re.IGNORECASE) for pattern in patterns)
 
 
 # =========================
@@ -1821,6 +1966,36 @@ def process_message(chat_id: str, user_text: str) -> str:
             "For your safety, please do not share NRIC, passport numbers, full card numbers, "
             "CVV, OTP, passwords, or bank details here.\n\n"
             "For account-specific or payment-related help, please type CUSTOMER SERVICE."
+        )
+
+    if is_class_cancellation_request(text):
+        clear_flow(chat_id)
+
+        return (
+            class_cancellation_reply(chat_id, text)
+            + "\n\nReply MENU to return to the main menu."
+        )
+
+    # If the customer asks to change trial booking details but the server memory
+    # does not have the old booking, still start the update flow instead of handing off.
+    if is_trial_update_request(text) and chat_id not in TRIAL_BOOKINGS:
+        TRIAL_BOOKINGS[chat_id] = {
+            "outlet": "",
+            "name": "",
+            "fitness_goal": "",
+        }
+
+        set_flow(chat_id, "trial_update_details")
+
+        return (
+            "Sure — I can help update your trial booking.\n\n"
+            "Please send the new details like this:\n"
+            "- Sarah Tan, Upper Bukit Timah\n"
+            "- Ben Low, Kovan\n"
+            "- change my name to Amanda Lee\n"
+            "- change to Woodlands\n"
+            "- change my fitness goal to flexibility\n\n"
+            "Reply MENU to return to the main menu."
         )
 
     if is_reset_request(text):
