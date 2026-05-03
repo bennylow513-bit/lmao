@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import threading
+import time
 import traceback
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -43,6 +45,23 @@ CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 
 # Stores handoff summaries while waiting for the user to choose outlet
 PENDING_HANDOFFS: Dict[str, Dict[str, str]] = {}
+
+# Stores inactivity timer state for each Telegram chat
+INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
+
+# 30 minutes = 1800 seconds
+# For testing, set this to 60 in Render
+INACTIVITY_WARNING_SECONDS = int(os.getenv("INACTIVITY_WARNING_SECONDS", "1800"))
+
+# 60 minutes total = warning after 30 min, close after another 30 min
+# For testing, set this to 120 in Render
+INACTIVITY_CLOSE_SECONDS = int(os.getenv("INACTIVITY_CLOSE_SECONDS", "3600"))
+
+# Bot checks inactivity every 60 seconds
+# For testing, set this to 10 in Render
+INACTIVITY_CHECK_SECONDS = int(os.getenv("INACTIVITY_CHECK_SECONDS", "60"))
+
+INACTIVITY_THREAD_STARTED = False
 
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
 
@@ -259,6 +278,22 @@ def save_request(kind: str, chat_id: str, payload: Dict) -> None:
 
     with open("requests_log.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def mark_chat_active(chat_id: str) -> None:
+    """
+    Called whenever the user sends a message.
+    This resets the inactivity timer.
+    """
+    INACTIVITY_STATE[chat_id] = {
+        "last_user_at": time.time(),
+        "warning_sent": False,
+        "closed": False,
+    }
+
+
+def clear_inactivity_state(chat_id: str) -> None:
+    INACTIVITY_STATE.pop(chat_id, None)
 
 
 def is_opt_out_request(text: str) -> bool:
@@ -836,6 +871,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         save_opt_out_users()
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
+        clear_inactivity_state(chat_id)
 
         save_request(
             "user_opted_out",
@@ -855,6 +891,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         save_opt_out_users()
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
+        mark_chat_active(chat_id)
 
         save_request(
             "user_opted_in",
@@ -868,6 +905,9 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     if chat_id in OPT_OUT_USERS:
         return "You have opted out. Reply START if you want to chat with Jal Yoga again."
+
+    # Reset the inactivity timer whenever the user sends a valid message
+    mark_chat_active(chat_id)
 
     if contains_sensitive_keyword(clean_text):
         save_request(
@@ -1072,6 +1112,101 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
         response.raise_for_status()
 
     return True
+
+
+# =========================
+# INACTIVITY CHECKER
+# =========================
+
+def inactivity_checker_loop() -> None:
+    """
+    Background loop for project/demo inactivity follow-up.
+
+    Behaviour:
+    - After 30 minutes of no user reply, send a short reminder.
+    - After 60 minutes total of no user reply, auto-close and clear chat memory.
+    """
+    while True:
+        time.sleep(INACTIVITY_CHECK_SECONDS)
+
+        now = time.time()
+
+        for chat_id, state in list(INACTIVITY_STATE.items()):
+            try:
+                if chat_id in OPT_OUT_USERS:
+                    clear_inactivity_state(chat_id)
+                    continue
+
+                last_user_at = float(state.get("last_user_at", now))
+                warning_sent = bool(state.get("warning_sent", False))
+                closed = bool(state.get("closed", False))
+
+                if closed:
+                    continue
+
+                idle_seconds = now - last_user_at
+
+                # 1. Send reminder after 30 minutes
+                if not warning_sent and idle_seconds >= INACTIVITY_WARNING_SECONDS:
+                    send_telegram_message(
+                        chat_id,
+                        "Just checking in — do you still need help? "
+                        "Reply here to continue, or type STOP to stop receiving follow-up messages.",
+                    )
+
+                    state["warning_sent"] = True
+
+                    save_request(
+                        "inactivity_warning_sent",
+                        chat_id,
+                        {
+                            "idle_seconds": int(idle_seconds),
+                        },
+                    )
+
+                # 2. Auto-close after another 30 minutes
+                elif warning_sent and idle_seconds >= INACTIVITY_CLOSE_SECONDS:
+                    send_telegram_message(
+                        chat_id,
+                        "We’ll close this chat for now. "
+                        "If you need help again, reply START or MENU anytime. 🙏",
+                    )
+
+                    reset_history(chat_id)
+                    PENDING_HANDOFFS.pop(chat_id, None)
+
+                    state["closed"] = True
+
+                    save_request(
+                        "chat_auto_closed",
+                        chat_id,
+                        {
+                            "idle_seconds": int(idle_seconds),
+                        },
+                    )
+
+            except Exception as e:
+                print("INACTIVITY CHECK ERROR:", str(e))
+                traceback.print_exc()
+
+
+def start_inactivity_checker() -> None:
+    global INACTIVITY_THREAD_STARTED
+
+    if INACTIVITY_THREAD_STARTED:
+        return
+
+    INACTIVITY_THREAD_STARTED = True
+
+    thread = threading.Thread(
+        target=inactivity_checker_loop,
+        daemon=True,
+    )
+
+    thread.start()
+
+
+start_inactivity_checker()
 
 
 # =========================
