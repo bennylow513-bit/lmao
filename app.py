@@ -1045,7 +1045,7 @@ def send_trial_booking_to_outlet(customer_chat_id: str, customer_reply: str) -> 
         f"Name: {name or 'Not provided'}\n"
         f"Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
         f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
-        "Please contact the customer within 24 hours."
+        "If you require further assistance, please use this ID when contacting Customer Service."
     )
 
     try:
@@ -1116,7 +1116,7 @@ def send_trial_booking_update_to_outlet(
         f"Name: {name or 'Not provided'}\n"
         f"Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
         f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
-        "Please contact the customer within 24 hours."
+        "If you require further assistance, please use this ID when contacting Customer Service."
     )
 
     try:
@@ -1149,7 +1149,8 @@ def send_trial_booking_update_to_outlet(
                     "Please do not follow up on the old outlet booking.\n\n"
                     f"Name: {name or 'Not provided'}\n"
                     f"Fitness Goal: {fitness_goal or 'Not provided'}\n"
-                    f"Customer Telegram Chat ID: {customer_chat_id}"
+                    f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
+                    "If you require further assistance, please use this ID when contacting Customer Service."
                 )
 
                 send_telegram_message(old_outlet_chat_id, old_message)
