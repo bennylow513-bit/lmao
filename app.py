@@ -2324,24 +2324,28 @@ def process_message(chat_id: str, user_text: str) -> str:
         TRIAL_BOOKINGS[chat_id] = updated
         clear_flow(chat_id)
 
-        if sent:
-            reply = (
-                "No problem — I’ve updated your trial booking.\n\n"
-                "Updated Trial Booking Summary:\n"
-                f"- Outlet: {updated.get('outlet') or 'Not provided'}\n"
-                "- Class: Trial Class\n"
-                f"- Name: {updated.get('name') or 'Not provided'}\n"
-                f"- Fitness Goal: {updated.get('fitness_goal') or 'Not provided'}\n\n"
-                f"I’ve sent the updated summary to the {updated.get('outlet')} team."
-            )
-
-            return add_customer_service_id_note(reply, chat_id) + "\n\nReply MENU to return to the main menu."
-
-        return (
-            "I’ve updated your trial booking in this chat, but I could not send it to the outlet group.\n\n"
-            "Please check that the outlet Telegram chat ID is added correctly in Render.\n\n"
-            "Reply MENU to return to the main menu."
+        reply = (
+            "No problem — I’ve updated your trial booking.\n\n"
+            "Updated Trial Booking Summary:\n"
+            f"- Outlet: {updated.get('outlet') or 'Not provided'}\n"
+            "- Class: Trial Class\n"
+            f"- Name: {updated.get('name') or 'Not provided'}\n"
+            f"- Fitness Goal: {updated.get('fitness_goal') or 'Not provided'}"
         )
+
+        if sent:
+            reply += f"\n\nI’ve sent the updated summary to the {updated.get('outlet')} team."
+        else:
+            reply += "\n\nYour updated details have been saved in this chat."
+
+        return add_customer_service_id_note(reply, chat_id) + "\n\nReply MENU to return to the main menu."
+
+        if sent:
+            reply += f"\n\nI’ve sent the updated summary to the {updated.get('outlet')} team."
+        else:
+            reply += "\n\nYour updated details have been saved in this chat."
+
+        return add_customer_service_id_note(reply, chat_id) + "\n\nReply MENU to return to the main menu."
 
     if chat_id in PENDING_HANDOFFS:
         pending = PENDING_HANDOFFS.pop(chat_id)
