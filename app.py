@@ -49,17 +49,15 @@ PENDING_HANDOFFS: Dict[str, Dict[str, str]] = {}
 # Stores inactivity timer state for each Telegram chat
 INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 
-# 30 minutes = 1800 seconds
-# For testing, set this to 20 or 60 in Render
-INACTIVITY_WARNING_SECONDS = int(os.getenv("INACTIVITY_WARNING_SECONDS", "1800"))
+# =========================
+# INACTIVITY TIMING
+# =========================
+# 10 minutes = 600 seconds
+# 20 minutes total = reminder after 10 min, close after another 10 min
 
-# 60 minutes total = warning after 30 min, close after another 30 min
-# For testing, set this to 40 or 120 in Render
-INACTIVITY_CLOSE_SECONDS = int(os.getenv("INACTIVITY_CLOSE_SECONDS", "3600"))
-
-# Bot checks inactivity every 60 seconds
-# For testing, set this to 5 or 10 in Render
-INACTIVITY_CHECK_SECONDS = int(os.getenv("INACTIVITY_CHECK_SECONDS", "60"))
+INACTIVITY_WARNING_SECONDS = 600
+INACTIVITY_CLOSE_SECONDS = 1200
+INACTIVITY_CHECK_SECONDS = 30
 
 INACTIVITY_THREAD_STARTED = False
 
