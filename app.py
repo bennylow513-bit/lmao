@@ -340,6 +340,29 @@ def strip_handoff_token(text: str) -> str:
     return text.replace("[HANDOFF]", "").strip()
 
 
+def add_customer_service_id_note(reply: str, chat_id: str) -> str:
+    """
+    Adds a customer service ID note to completed summary replies.
+    """
+    summary_triggers = [
+        "Trial Booking Summary:",
+        "Refer-a-Friend Summary:",
+        "Corporate / Partnership Summary:",
+        "Corporate/Partnership Summary:",
+        "Staff Hub Summary:",
+    ]
+
+    if any(trigger in reply for trigger in summary_triggers):
+        return (
+            f"{reply}\n\n"
+            f"If you need any further assistance, please quote this Customer Service ID "
+            f"so our team can find your request quickly:\n"
+            f"{chat_id}"
+        )
+
+    return reply
+
+
 def clean_number(number: str) -> str:
     return (
         str(number)
@@ -566,6 +589,7 @@ Rules:
 - You may use these numbers only if they are not TBC.
 - If an outlet number is TBC, do not invent it.
 - For trial bookings, the app may send the summary to the outlet Telegram group if the outlet Telegram chat ID is configured.
+- For refer-a-friend requests, the app may send the summary to the preferred studio Telegram group if configured.
 - For customer service handoff, the app may send the summary to the outlet Telegram group if configured.
 """
 
@@ -792,6 +816,17 @@ Current member flow:
 - If they choose option 3 inside current member menu, follow booking help.
 - If they choose option 4 inside current member menu, follow refer-a-friend.
 - If they ask membership cancellation, use [HANDOFF].
+
+Refer-a-friend flow:
+- Ask one question at a time:
+  1. Friend's Name
+  2. Friend's Contact Number
+  3. Preferred Studio
+- Final refer-a-friend summary format:
+  Refer-a-Friend Summary:
+  - Friend Name: <friend name>
+  - Friend Contact: <friend contact>
+  - Preferred Studio: <studio>
 
 Outlet and contact number:
 - If user asks for an outlet address, provide the address from the knowledge.
@@ -1167,6 +1202,102 @@ def send_trial_booking_update_to_outlet(
 
 
 # =========================
+# SEND REFER-A-FRIEND TO OUTLET GROUP
+# =========================
+
+def parse_refer_friend_summary(customer_reply: str) -> Dict[str, str]:
+    referral = {
+        "friend_name": "",
+        "friend_contact": "",
+        "preferred_studio": "",
+    }
+
+    if "Refer-a-Friend Summary:" not in customer_reply:
+        return referral
+
+    for line in customer_reply.splitlines():
+        clean_line = line.strip()
+
+        if clean_line.lower().startswith("- friend name:"):
+            referral["friend_name"] = clean_line.split(":", 1)[1].strip()
+
+        elif clean_line.lower().startswith("- friend contact:"):
+            referral["friend_contact"] = clean_line.split(":", 1)[1].strip()
+
+        elif clean_line.lower().startswith("- preferred studio:"):
+            referral["preferred_studio"] = clean_line.split(":", 1)[1].strip()
+
+    return referral
+
+
+def send_refer_friend_to_outlet(customer_chat_id: str, customer_reply: str) -> None:
+    """
+    If the bot reply contains a Refer-a-Friend Summary,
+    send it to the correct outlet Telegram group.
+    """
+
+    if "Refer-a-Friend Summary:" not in customer_reply:
+        return
+
+    referral = parse_refer_friend_summary(customer_reply)
+
+    friend_name = referral.get("friend_name", "")
+    friend_contact = referral.get("friend_contact", "")
+    preferred_studio = referral.get("preferred_studio", "")
+
+    if not preferred_studio:
+        preferred_studio = detect_outlet_from_text(customer_reply)
+
+    if not preferred_studio:
+        print("REFER FRIEND SEND SKIPPED: No preferred studio detected", flush=True)
+        return
+
+    outlet_chat_id = outlet_telegram_chat_id(preferred_studio)
+
+    if not outlet_chat_id:
+        print(
+            f"REFER FRIEND SEND SKIPPED: Missing Telegram chat ID for outlet={preferred_studio}",
+            flush=True,
+        )
+        return
+
+    outlet_message = (
+        "New Refer-a-Friend Received ✨\n\n"
+        f"Preferred Studio: {preferred_studio}\n"
+        f"Friend Name: {friend_name or 'Not provided'}\n"
+        f"Friend Contact: {friend_contact or 'Not provided'}\n\n"
+        f"Referrer Telegram Chat ID: {customer_chat_id}\n\n"
+        "If you require further assistance, please use this ID when contacting Customer Service."
+    )
+
+    try:
+        send_telegram_message(outlet_chat_id, outlet_message)
+
+        save_request(
+            "refer_friend_sent_to_outlet",
+            customer_chat_id,
+            {
+                "preferred_studio": preferred_studio,
+                "outlet_chat_id": outlet_chat_id,
+                "friend_name": friend_name,
+                "friend_contact": friend_contact,
+            },
+        )
+
+        print(
+            f"REFER FRIEND SENT to outlet={preferred_studio}, chat_id={outlet_chat_id}",
+            flush=True,
+        )
+
+    except Exception as e:
+        print(
+            f"REFER FRIEND SEND ERROR for outlet={preferred_studio}: {str(e)}",
+            flush=True,
+        )
+        traceback.print_exc()
+
+
+# =========================
 # MAIN MESSAGE PROCESSOR
 # =========================
 
@@ -1298,6 +1429,9 @@ def process_message(chat_id: str, user_text: str) -> str:
                 f"- Name: {updated_booking.get('name') or 'Not provided'}\n"
                 f"- Fitness Goal: {updated_booking.get('fitness_goal') or 'Not provided'}\n\n"
                 f"I’ve sent the updated summary to the {new_outlet} team.\n\n"
+                "If you need any further assistance, please quote this Customer Service ID "
+                "so our team can find your request quickly:\n"
+                f"{chat_id}\n\n"
                 "Reply MENU to return to the main menu."
             )
 
@@ -1457,8 +1591,12 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     final_reply = strip_handoff_token(answer).strip()
 
-    # Send trial booking summary to the correct outlet Telegram group if this is a trial booking
+    # Send summaries to the correct outlet Telegram group if applicable
     send_trial_booking_to_outlet(chat_id, final_reply)
+    send_refer_friend_to_outlet(chat_id, final_reply)
+
+    # Add customer service ID note for completed summaries
+    final_reply = add_customer_service_id_note(final_reply, chat_id)
 
     return final_reply + "\n\nReply MENU to return to the main menu."
 
