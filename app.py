@@ -1629,20 +1629,19 @@ def handle_main_menu_choice(chat_id: str, text: str) -> str:
         )
 
     if choice == "5":
-        clean_answer = (
-            "I’ll pass this to our Customer Service team.\n\n"
-            "Summary:\n"
-            "- Topic: Staff Hub enquiry\n"
-            "- Outlet: Not specified\n"
-            "- Message: Customer selected Staff Hub"
+        set_flow(chat_id, "staff_name")
+
+        return knowledge_reply(
+            chat_id,
+            text,
+            (
+                "The customer selected Staff Hub. "
+                "Start the Staff Hub flow. "
+                "Ask for the staff name first. "
+                "Ask only one question."
+            ),
+            "Staff Hub 🙏\n\nMay I have the staff name?",
         )
-
-        PENDING_HANDOFFS[chat_id] = {
-            "user_message": text,
-            "clean_answer": clean_answer,
-        }
-
-        return ask_outlet_before_handoff_text(chat_id, text)
 
     return ""
 
@@ -1989,7 +1988,102 @@ def handle_corporate_flow(chat_id: str, text: str) -> str:
         )
 
     return ""
+def handle_staff_hub_flow(chat_id: str, text: str) -> str:
+    flow = get_flow(chat_id)
+    stage = get_flow_stage(chat_id)
 
+    if stage == "staff_name":
+        staff_name = text.strip()
+
+        if len(staff_name) < 2:
+            return "Please share the staff name."
+
+        set_flow(chat_id, "staff_studio", staff_name=staff_name)
+
+        return (
+            "Which studio is this related to?\n\n"
+            f"{studio_options_text()}"
+        )
+
+    if stage == "staff_studio":
+        outlet = detect_outlet_from_text(text)
+
+        if not outlet:
+            return (
+                "Please choose a valid studio:\n\n"
+                f"{studio_options_text()}"
+            )
+
+        set_flow(
+            chat_id,
+            "staff_room",
+            staff_name=flow.get("staff_name", ""),
+            outlet=outlet,
+        )
+
+        return "Which room is this related to?"
+
+    if stage == "staff_room":
+        room = text.strip()
+
+        if len(room) < 1:
+            return "Please share the room."
+
+        set_flow(
+            chat_id,
+            "staff_member_booking_details",
+            staff_name=flow.get("staff_name", ""),
+            outlet=flow.get("outlet", ""),
+            room=room,
+        )
+
+        return (
+            "Please share the member and booking details.\n\n"
+            "For example:\n"
+            "- Member name\n"
+            "- Booking date and time\n"
+            "- Class name\n"
+            "- Issue or request"
+        )
+
+    if stage == "staff_member_booking_details":
+        staff_name = flow.get("staff_name", "")
+        outlet = flow.get("outlet", "")
+        room = flow.get("room", "")
+        details = text.strip()
+
+        if len(details) < 2:
+            return "Please share the member and booking details."
+
+        clear_flow(chat_id)
+
+        clean_answer = (
+            "I’ll pass this to our Customer Service team.\n\n"
+            "Staff Hub Summary:\n"
+            f"- Staff Name: {staff_name}\n"
+            f"- Studio: {outlet}\n"
+            f"- Room: {room}\n"
+            f"- Member and Booking Details: {details}"
+        )
+
+        sent = send_customer_service_handoff_to_telegram(
+            chat_id,
+            clean_answer,
+            outlet,
+        )
+
+        if sent:
+            return (
+                f"{clean_answer}\n\n"
+                f"Thank you! I’ve sent this to the {outlet} team."
+            )
+
+        return (
+            f"{clean_answer}\n\n"
+            "Customer Service Telegram group is not configured yet."
+        )
+
+    return ""
 
 # =========================
 # PROCESS MESSAGE
@@ -2146,6 +2240,15 @@ def process_message(chat_id: str, user_text: str) -> str:
             return reply + "\n\nReply MENU to return to the main menu."
     if stage.startswith("corporate_"):
         reply = handle_corporate_flow(chat_id, text)
+
+        if reply:
+            add_history(chat_id, "user", text)
+            add_history(chat_id, "assistant", reply)
+
+            return reply + "\n\nReply MENU to return to the main menu."    
+        
+    if stage.startswith("staff_"):
+        reply = handle_staff_hub_flow(chat_id, text)
 
         if reply:
             add_history(chat_id, "user", text)
