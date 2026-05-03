@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 node_modules/
+requests_log.jsonl
+telegram_opt_out_users.json

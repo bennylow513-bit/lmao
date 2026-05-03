@@ -30,9 +30,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "")
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
 
+# Optional WhatsApp number, mainly for website button/contact display
 CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
 
-# Optional fallback Telegram group for customer service
+# Optional fallback Telegram group for customer service handoff
 CUSTOMER_SERVICE_TELEGRAM_CHAT_ID = os.getenv("CUSTOMER_SERVICE_TELEGRAM_CHAT_ID", "")
 
 PORT = int(os.getenv("PORT", "5000"))
@@ -46,7 +47,7 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 
-# Stores handoff summaries while waiting for the user to choose outlet
+# Stores customer service handoff summaries while waiting for user to choose outlet
 PENDING_HANDOFFS: Dict[str, Dict[str, str]] = {}
 
 # Stores completed trial bookings so user can change outlet later
@@ -191,7 +192,7 @@ if not STUDIOS:
 
 
 # =========================
-# SMALL SAFETY HELPERS
+# SAFETY / TEXT HELPERS
 # =========================
 
 OPT_OUT_WORDS = {
@@ -276,15 +277,13 @@ def add_history(chat_id: str, role: str, content: str) -> None:
 
 
 def save_request(kind: str, chat_id: str, payload: Dict) -> None:
-    record = {
-        "kind": kind,
-        "chat_id": chat_id,
-        "payload": payload,
-        "created_at_sg": now_singapore_iso(),
-    }
+    """
+    Logging disabled.
 
-    with open("requests_log.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    This function is kept so the rest of the app will not break,
+    but it will not create requests_log.jsonl anymore.
+    """
+    return
 
 
 def mark_chat_active(chat_id: str) -> None:
@@ -387,7 +386,6 @@ def studio_aliases(studio_name: str) -> List[str]:
 
 def detect_outlet_from_text(text: str) -> str:
     """
-    Less hardcoded outlet detection.
     Uses studio names from knowledge.txt and fuzzy matching for typos.
     """
     clean = simple_text(text)
@@ -471,7 +469,7 @@ def get_studio_address(outlet_name: str) -> str:
 
 # =========================
 # WHATSAPP LINK HELPERS
-# Used only for website / old contact support.
+# Used only for website/contact display.
 # Customer service handoff now sends to Telegram groups.
 # =========================
 
@@ -492,27 +490,6 @@ def build_prefilled_whatsapp_link(number: str, message: str) -> str:
 
     encoded_message = quote(message, safe="")
     return f"https://wa.me/{clean}?text={encoded_message}"
-
-
-def customer_service_prefilled_link(user_text: str, summary_text: str) -> str:
-    detected_outlet = detect_outlet_from_text(user_text + "\n" + summary_text)
-
-    selected_number = ""
-
-    if detected_outlet:
-        selected_number = outlet_whatsapp_number(detected_outlet)
-
-    if not selected_number:
-        selected_number = CUSTOMER_SERVICE_WHATSAPP_NUMBER
-
-    prefilled_message = (
-        "Hello Jal Yoga Customer Service,\n\n"
-        "I need help with this enquiry:\n\n"
-        f"{summary_text}\n\n"
-        "Thank you."
-    )
-
-    return build_prefilled_whatsapp_link(selected_number, prefilled_message)
 
 
 def build_outlet_contact_reply(outlet: str) -> str:
@@ -620,8 +597,7 @@ def route_message_with_llm(chat_id: str, user_text: str, mode: str = "normal") -
     Small LLM router.
     Purpose:
     - Detect outlet contact requests
-    - Detect outlet answer while pending Customer Service handoff
-    - Reduce hardcoded keyword lists
+    - Detect outlet answer while pending customer service handoff
     """
     outlet_guess = detect_outlet_from_text(user_text)
 
@@ -671,13 +647,6 @@ Decide:
    - "high", "medium", or "low".
 
 Understand typos and casual Singapore phrasing.
-
-Examples:
-- "katong contact" -> {{"intent":"outlet_contact","outlet":"Katong","no_specific_outlet":false,"confidence":"high"}}
-- "koven number" -> {{"intent":"outlet_contact","outlet":"Kovan","no_specific_outlet":false,"confidence":"high"}}
-- "ubt whatsapp" -> {{"intent":"outlet_contact","outlet":"Upper Bukit Timah","no_specific_outlet":false,"confidence":"high"}}
-- "no specific outlet" -> {{"intent":"handoff_outlet_answer","outlet":"Not specified","no_specific_outlet":true,"confidence":"high"}}
-- "any outlet also can" -> {{"intent":"handoff_outlet_answer","outlet":"Not specified","no_specific_outlet":true,"confidence":"high"}}
 """
 
     try:
@@ -1777,7 +1746,6 @@ def telegram_webhook():
         flush=True,
     )
 
-    # Important:
     # Outlet groups are for receiving booking summaries.
     # We log their chat IDs, but we do not let the bot reply to staff group messages.
     if chat_type in {"group", "supergroup", "channel"}:
