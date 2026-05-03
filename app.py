@@ -1614,20 +1614,19 @@ def handle_main_menu_choice(chat_id: str, text: str) -> str:
         return general_enquiry_menu_text(chat_id, text)
 
     if choice == "4":
-        clean_answer = (
-            "I’ll pass this to our Customer Service team.\n\n"
-            "Summary:\n"
-            "- Topic: Corporate / Partnership enquiry\n"
-            "- Outlet: Not specified\n"
-            "- Message: Customer selected Corporate / Partnerships"
+        set_flow(chat_id, "corporate_name")
+
+        return knowledge_reply(
+            chat_id,
+            text,
+            (
+                "The customer selected Corporate / Partnerships. "
+                "Start the Corporate / Partnership flow. "
+                "Ask for the customer's full name first. "
+                "Ask only one question."
+            ),
+            "Sure — may I have your full name?",
         )
-
-        PENDING_HANDOFFS[chat_id] = {
-            "user_message": text,
-            "clean_answer": clean_answer,
-        }
-
-        return ask_outlet_before_handoff_text(chat_id, text)
 
     if choice == "5":
         clean_answer = (
@@ -1917,6 +1916,79 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
         return add_customer_service_id_note(reply, chat_id)
 
     return ""
+def handle_corporate_flow(chat_id: str, text: str) -> str:
+    flow = get_flow(chat_id)
+    stage = get_flow_stage(chat_id)
+
+    if stage == "corporate_name":
+        name = text.strip()
+
+        if len(name) < 2:
+            return "Please share your full name."
+
+        set_flow(chat_id, "corporate_email", name=name)
+
+        return "Thanks. What is your email address?"
+
+    if stage == "corporate_email":
+        email = text.strip()
+
+        if "@" not in email or "." not in email:
+            return "Please share a valid email address."
+
+        set_flow(
+            chat_id,
+            "corporate_message",
+            name=flow.get("name", ""),
+            email=email,
+        )
+
+        return (
+            "Thank you. Please briefly tell us what your Corporate / Partnership enquiry is about.\n\n"
+            "For example:\n"
+            "- corporate wellness programme\n"
+            "- company yoga class\n"
+            "- partnership proposal\n"
+            "- event collaboration"
+        )
+
+    if stage == "corporate_message":
+        name = flow.get("name", "")
+        email = flow.get("email", "")
+        message = text.strip()
+
+        if len(message) < 2:
+            return "Please briefly tell us what your Corporate / Partnership enquiry is about."
+
+        clear_flow(chat_id)
+
+        clean_answer = (
+            "I’ll pass this to our Customer Service team.\n\n"
+            "Corporate / Partnership Summary:\n"
+            f"- Name: {name}\n"
+            f"- Email: {email}\n"
+            f"- Message: {message}"
+        )
+
+        sent = send_customer_service_handoff_to_telegram(
+            chat_id,
+            clean_answer,
+            "Not specified",
+        )
+
+        if sent:
+            return (
+                f"{clean_answer}\n\n"
+                "Thank you! I’ve sent this to our Customer Service team. "
+                "They will follow up with you soon."
+            )
+
+        return (
+            f"{clean_answer}\n\n"
+            "Customer Service Telegram group is not configured yet."
+        )
+
+    return ""
 
 
 # =========================
@@ -2072,6 +2144,15 @@ def process_message(chat_id: str, user_text: str) -> str:
             add_history(chat_id, "assistant", reply)
 
             return reply + "\n\nReply MENU to return to the main menu."
+    if stage.startswith("corporate_"):
+        reply = handle_corporate_flow(chat_id, text)
+
+        if reply:
+            add_history(chat_id, "user", text)
+            add_history(chat_id, "assistant", reply)
+
+            return reply + "\n\nReply MENU to return to the main menu."    
+            
 
     new_outlet = detect_outlet_from_text(text)
     new_name = extract_updated_name(text)
