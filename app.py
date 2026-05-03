@@ -583,7 +583,8 @@ Use ONLY:
 
 Language rule:
 - Customer language: {language}
-- Reply in the customer language where possible.
+- Translate all customer-facing wording into the customer language where possible.
+- Do not copy the English menu wording just because the knowledge file or fallback text is written in English.
 - If the customer message is only a number, keep replying in the stored customer language.
 - Preserve outlet names, menu numbers, phone numbers, Telegram IDs, links, and formatting.
 - Do not add information that is not in the knowledge file.
@@ -2120,6 +2121,52 @@ def process_message(chat_id: str, user_text: str) -> str:
     return add_customer_service_id_note(final_reply, chat_id) + "\n\nReply MENU to return to the main menu."
 
 
+
+# =========================
+# FINAL TRANSLATION LAYER
+# =========================
+
+def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
+    """
+    Final safety layer to translate hardcoded/fallback replies.
+
+    This fixes cases where the user types Chinese/Portuguese/Malay/etc,
+    but the reply came from Python fallback text instead of the LLM.
+    """
+    language = detect_user_language(chat_id, user_text)
+
+    if not language or language.lower() == "english":
+        return reply
+
+    if not client:
+        return reply
+
+    try:
+        response = client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                f"Translate this Jal Yoga bot reply into {language}. "
+                "Keep the meaning exactly the same. "
+                "Preserve menu numbers, outlet names, phone numbers, Telegram IDs, links, and formatting. "
+                "Do not add new information. "
+                "Do not remove MENU, STOP, Customer Service ID, [HANDOFF], or outlet names. "
+                "If the reply is already in the correct language, return it unchanged."
+            ),
+            input=reply,
+        )
+
+        translated = (response.output_text or "").strip()
+
+        if translated:
+            return translated
+
+    except Exception as e:
+        print("TRANSLATION ERROR:", str(e), flush=True)
+        traceback.print_exc()
+
+    return reply
+
+
 # =========================
 # ROUTES
 # =========================
@@ -2295,6 +2342,10 @@ def telegram_webhook():
 
     try:
         reply = process_message(chat_id, text)
+
+        # Final translation layer for hardcoded and fallback replies
+        reply = translate_reply_if_needed(chat_id, text, reply)
+
         send_telegram_message(chat_id, reply)
 
     except Exception as e:
