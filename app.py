@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import traceback
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Dict, List
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -28,15 +30,9 @@ TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
 
 CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
 
-ALEXANDRA_WHATSAPP_NUMBER = os.getenv("ALEXANDRA_WHATSAPP_NUMBER", "")
-KATONG_WHATSAPP_NUMBER = os.getenv("KATONG_WHATSAPP_NUMBER", "")
-KOVAN_WHATSAPP_NUMBER = os.getenv("KOVAN_WHATSAPP_NUMBER", "")
-UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER = os.getenv("UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER", "")
-WOODLANDS_WHATSAPP_NUMBER = os.getenv("WOODLANDS_WHATSAPP_NUMBER", "")
-
 PORT = int(os.getenv("PORT", "5000"))
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 
 # =========================
@@ -89,43 +85,60 @@ KNOWLEDGE_TEXT = load_knowledge_text()
 
 
 def parse_studios(text: str) -> List[Dict[str, str]]:
-    studio_names = [
-        "Alexandra",
-        "Katong",
-        "Kovan",
-        "Upper Bukit Timah",
-        "Woodlands",
-    ]
+    """
+    Reads studio names and addresses from section 2. STUDIOS in knowledge.txt.
 
+    Expected format:
+    - Katong: 131 E Coast Rd, #03-01, Singapore 428816
+    """
     studios: List[Dict[str, str]] = []
+    inside_studio_section = False
 
     for line in text.splitlines():
-        line = line.strip()
+        clean_line = line.strip()
 
-        if not line.startswith("- "):
+        if clean_line.upper().startswith("2. STUDIOS"):
+            inside_studio_section = True
             continue
 
-        clean_line = line[2:].strip()
+        if inside_studio_section and clean_line.startswith("===") and studios:
+            break
 
-        for studio_name in studio_names:
-            prefix = studio_name + ":"
+        if not inside_studio_section:
+            continue
 
-            if clean_line.lower().startswith(prefix.lower()):
-                address = clean_line.split(":", 1)[1].strip()
+        if not clean_line.startswith("- "):
+            continue
 
-                if not any(s["name"] == studio_name for s in studios):
-                    studios.append(
-                        {
-                            "name": studio_name,
-                            "address": address,
-                        }
-                    )
+        item = clean_line[2:].strip()
+
+        if ":" not in item:
+            continue
+
+        name, address = item.split(":", 1)
+        name = name.strip()
+        address = address.strip()
+
+        if not name or not address:
+            continue
+
+        if "singapore" not in address.lower():
+            continue
+
+        if not any(s["name"].lower() == name.lower() for s in studios):
+            studios.append(
+                {
+                    "name": name,
+                    "address": address,
+                }
+            )
 
     return studios
 
 
 STUDIOS = parse_studios(KNOWLEDGE_TEXT)
 
+# Backup only if knowledge.txt cannot be read properly
 if not STUDIOS:
     STUDIOS = [
         {
@@ -208,6 +221,12 @@ def normalize(text: str) -> str:
     return " ".join((text or "").strip().lower().replace("’", "'").split())
 
 
+def simple_text(text: str) -> str:
+    text = normalize(text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
 def now_singapore_iso() -> str:
     return datetime.now(ZoneInfo("Asia/Singapore")).isoformat()
 
@@ -278,6 +297,114 @@ def clean_number(number: str) -> str:
     )
 
 
+# =========================
+# STUDIO / OUTLET HELPERS
+# =========================
+
+def studio_names() -> List[str]:
+    return [studio["name"] for studio in STUDIOS]
+
+
+def studio_options_text(include_not_specified: bool = False) -> str:
+    options = [f"- {name}" for name in studio_names()]
+
+    if include_not_specified:
+        options.append("- Not specified")
+
+    return "\n".join(options)
+
+
+def studio_aliases(studio_name: str) -> List[str]:
+    clean_name = simple_text(studio_name)
+    words = clean_name.split()
+
+    aliases = {clean_name}
+
+    if len(words) > 1:
+        initials = "".join(word[0] for word in words if word)
+        aliases.add(initials)
+
+    for word in words:
+        if len(word) >= 4:
+            aliases.add(word)
+
+    return list(aliases)
+
+
+def detect_outlet_from_text(text: str) -> str:
+    """
+    Less hardcoded outlet detection.
+    Uses studio names from knowledge.txt and fuzzy matching for typos.
+    """
+    clean = simple_text(text)
+
+    if not clean:
+        return ""
+
+    padded_clean = f" {clean} "
+
+    for studio_name in studio_names():
+        for alias in studio_aliases(studio_name):
+            if f" {alias} " in padded_clean:
+                return studio_name
+
+    words = clean.split()
+    chunks = []
+
+    for size in range(1, 4):
+        for i in range(len(words) - size + 1):
+            chunks.append(" ".join(words[i:i + size]))
+
+    best_studio = ""
+    best_score = 0.0
+
+    for studio_name in studio_names():
+        for alias in studio_aliases(studio_name):
+            for chunk in chunks:
+                score = SequenceMatcher(None, chunk, alias).ratio()
+
+                if score > best_score:
+                    best_score = score
+                    best_studio = studio_name
+
+    if best_score >= 0.78:
+        return best_studio
+
+    return ""
+
+
+def env_key_for_outlet(outlet_name: str) -> str:
+    """
+    Example:
+    Upper Bukit Timah -> UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER
+    """
+    key = re.sub(r"[^A-Za-z0-9]+", "_", outlet_name.upper()).strip("_")
+    return f"{key}_WHATSAPP_NUMBER"
+
+
+def outlet_whatsapp_number(outlet_name: str) -> str:
+    return os.getenv(env_key_for_outlet(outlet_name), "")
+
+
+def outlet_whatsapp_numbers() -> Dict[str, str]:
+    return {
+        studio["name"]: outlet_whatsapp_number(studio["name"])
+        for studio in STUDIOS
+    }
+
+
+def get_studio_address(outlet_name: str) -> str:
+    for studio in STUDIOS:
+        if studio["name"].lower() == outlet_name.lower():
+            return studio["address"]
+
+    return ""
+
+
+# =========================
+# WHATSAPP LINK HELPERS
+# =========================
+
 def customer_service_link() -> str:
     number = clean_number(CUSTOMER_SERVICE_WHATSAPP_NUMBER)
 
@@ -285,41 +412,6 @@ def customer_service_link() -> str:
         return ""
 
     return f"https://wa.me/{number}"
-
-
-def outlet_whatsapp_numbers() -> Dict[str, str]:
-    return {
-        "Alexandra": ALEXANDRA_WHATSAPP_NUMBER,
-        "Katong": KATONG_WHATSAPP_NUMBER,
-        "Kovan": KOVAN_WHATSAPP_NUMBER,
-        "Upper Bukit Timah": UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER,
-        "Woodlands": WOODLANDS_WHATSAPP_NUMBER,
-    }
-
-
-def detect_outlet_from_text(text: str) -> str:
-    t = normalize(text)
-
-    outlet_aliases = {
-        "upper bukit timah": "Upper Bukit Timah",
-        "bukit timah": "Upper Bukit Timah",
-        "bukit timmah": "Upper Bukit Timah",
-        "ubt": "Upper Bukit Timah",
-        "alexandra": "Alexandra",
-        "alex": "Alexandra",
-        "katong": "Katong",
-        "katon": "Katong",
-        "kovan": "Kovan",
-        "koven": "Kovan",
-        "woodlands": "Woodlands",
-        "woodland": "Woodlands",
-    }
-
-    for alias, outlet in outlet_aliases.items():
-        if alias in t:
-            return outlet
-
-    return ""
 
 
 def build_prefilled_whatsapp_link(number: str, message: str) -> str:
@@ -338,7 +430,7 @@ def customer_service_prefilled_link(user_text: str, summary_text: str) -> str:
     selected_number = ""
 
     if detected_outlet:
-        selected_number = outlet_whatsapp_numbers().get(detected_outlet, "")
+        selected_number = outlet_whatsapp_number(detected_outlet)
 
     if not selected_number:
         selected_number = CUSTOMER_SERVICE_WHATSAPP_NUMBER
@@ -353,52 +445,11 @@ def customer_service_prefilled_link(user_text: str, summary_text: str) -> str:
     return build_prefilled_whatsapp_link(selected_number, prefilled_message)
 
 
-# =========================
-# OUTLET CONTACT FORMAT
-# =========================
-
-def get_studio_address(outlet_name: str) -> str:
-    for studio in STUDIOS:
-        if studio["name"].lower() == outlet_name.lower():
-            return studio["address"]
-
-    return ""
-
-
-def is_outlet_contact_request(text: str) -> bool:
-    t = normalize(text)
-    tokens = set(t.split())
-
-    contact_words = [
-        "contact",
-        "contact number",
-        "phone",
-        "phone number",
-        "number",
-        "whatsapp",
-        "whatsapp number",
-        "call",
-        "telephone",
-        "hotline",
-        "wa number",
-    ]
-
-    if "wa" in tokens:
-        return True
-
-    return any(word in t for word in contact_words)
-
-
-def build_outlet_contact_reply(user_text: str) -> str:
-    outlet = detect_outlet_from_text(user_text)
-
-    if not outlet:
+def build_outlet_contact_reply(outlet: str) -> str:
+    if not outlet or outlet == "Not specified":
         return ""
 
-    if not is_outlet_contact_request(user_text):
-        return ""
-
-    number = outlet_whatsapp_numbers().get(outlet, "")
+    number = outlet_whatsapp_number(outlet)
 
     if not number or clean_number(number).upper() == "TBC":
         number = CUSTOMER_SERVICE_WHATSAPP_NUMBER
@@ -440,6 +491,15 @@ def replace_summary_outlet(summary_text: str, outlet: str) -> str:
 
 
 def live_contact_config_text() -> str:
+    outlet_lines = []
+
+    for studio in STUDIOS:
+        name = studio["name"]
+        number = outlet_whatsapp_number(name) or "TBC"
+        outlet_lines.append(f"- {name}: {number}")
+
+    outlet_text = "\n".join(outlet_lines)
+
     return f"""
 LIVE CUSTOMER SERVICE CONFIG FROM RENDER
 
@@ -447,11 +507,7 @@ Main Customer Service WhatsApp:
 - {CUSTOMER_SERVICE_WHATSAPP_NUMBER or "TBC"}
 
 Outlet WhatsApp Numbers:
-- Alexandra: {ALEXANDRA_WHATSAPP_NUMBER or "TBC"}
-- Katong: {KATONG_WHATSAPP_NUMBER or "TBC"}
-- Kovan: {KOVAN_WHATSAPP_NUMBER or "TBC"}
-- Upper Bukit Timah: {UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER or "TBC"}
-- Woodlands: {WOODLANDS_WHATSAPP_NUMBER or "TBC"}
+{outlet_text}
 
 Rules:
 - You may use these numbers only if they are not TBC.
@@ -462,11 +518,139 @@ Rules:
 
 
 # =========================
+# LLM ROUTER
+# =========================
+
+def parse_json_reply(text: str) -> Dict:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    try:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+
+        if start >= 0 and end > start:
+            return json.loads(text[start:end])
+    except Exception:
+        pass
+
+    return {}
+
+
+def route_message_with_llm(chat_id: str, user_text: str, mode: str = "normal") -> Dict:
+    """
+    Small LLM router.
+    Purpose:
+    - Detect outlet contact requests
+    - Detect outlet answer while pending Customer Service handoff
+    - Reduce hardcoded keyword lists
+    """
+    outlet_guess = detect_outlet_from_text(user_text)
+
+    default_result = {
+        "intent": "normal",
+        "outlet": outlet_guess,
+        "no_specific_outlet": False,
+        "confidence": "low",
+    }
+
+    if not client:
+        return default_result
+
+    history = CHAT_HISTORY.get(chat_id, [])
+
+    history_text = "\n".join(
+        f"{item['role'].upper()}: {item['content']}" for item in history[-6:]
+    )
+
+    instructions = f"""
+You are a routing helper for a Jal Yoga Telegram bot.
+
+Return JSON only. No markdown. No explanation.
+
+Allowed outlets:
+{studio_options_text(include_not_specified=True)}
+
+Mode:
+{mode}
+
+Decide:
+1. intent:
+   - "outlet_contact" if user asks for outlet phone, WhatsApp, contact, number, call, hotline, or how to contact an outlet.
+   - "handoff_outlet_answer" if mode is "handoff_outlet_answer" and user is answering which outlet the issue is about.
+   - "normal" for everything else.
+
+2. outlet:
+   - Must be one of the allowed outlet names.
+   - Use "Not specified" only if user clearly says no specific outlet, any outlet, not sure, do not know, idk, or it does not matter.
+   - Use "" if unclear.
+
+3. no_specific_outlet:
+   - true only when user clearly says there is no specific outlet.
+   - false otherwise.
+
+4. confidence:
+   - "high", "medium", or "low".
+
+Understand typos and casual Singapore phrasing.
+
+Examples:
+- "katong contact" -> {{"intent":"outlet_contact","outlet":"Katong","no_specific_outlet":false,"confidence":"high"}}
+- "koven number" -> {{"intent":"outlet_contact","outlet":"Kovan","no_specific_outlet":false,"confidence":"high"}}
+- "ubt whatsapp" -> {{"intent":"outlet_contact","outlet":"Upper Bukit Timah","no_specific_outlet":false,"confidence":"high"}}
+- "no specific outlet" -> {{"intent":"handoff_outlet_answer","outlet":"Not specified","no_specific_outlet":true,"confidence":"high"}}
+- "any outlet also can" -> {{"intent":"handoff_outlet_answer","outlet":"Not specified","no_specific_outlet":true,"confidence":"high"}}
+"""
+
+    try:
+        response = client.responses.create(
+            model=OPENAI_MODEL,
+            reasoning={"effort": "low"},
+            instructions=instructions,
+            input=f"Recent chat:\n{history_text}\n\nUser message:\n{user_text}",
+        )
+
+        data = parse_json_reply(response.output_text or "")
+
+    except Exception as e:
+        print("ROUTER ERROR:", str(e))
+        return default_result
+
+    if not isinstance(data, dict):
+        return default_result
+
+    intent = data.get("intent", "normal")
+    outlet = data.get("outlet", "")
+    no_specific_outlet = bool(data.get("no_specific_outlet", False))
+    confidence = data.get("confidence", "low")
+
+    allowed_outlets = studio_names() + ["Not specified", ""]
+
+    if outlet not in allowed_outlets:
+        outlet = outlet_guess
+
+    if intent not in {"outlet_contact", "handoff_outlet_answer", "normal"}:
+        intent = "normal"
+
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "low"
+
+    return {
+        "intent": intent,
+        "outlet": outlet,
+        "no_specific_outlet": no_specific_outlet,
+        "confidence": confidence,
+    }
+
+
+# =========================
 # LLM BRAIN
 # =========================
 
 def ask_llm(chat_id: str, user_text: str) -> str:
-    if not OPENAI_API_KEY:
+    if not client:
         return (
             "I’m sorry — the AI answer service is not configured yet.\n"
             "Please type CUSTOMER SERVICE and our team will follow up."
@@ -529,37 +713,10 @@ Summary:
 
 [HANDOFF]
 
-Do not add long explanations before the summary.
-Do not say "Please let us know how we can help you" unless the user directly asks for Customer Service.
-Do not repeat the same handoff message twice.
-
 Important:
 - If [HANDOFF] is used and the outlet is unknown, write "- Outlet: Not specified".
 - The app will ask the user for a specific outlet before sending the WhatsApp Customer Service link.
-
-The app will add a WhatsApp link after [HANDOFF].
-The WhatsApp link will open with the summary already typed.
-The user still needs to press Send manually.
-
-Important difference:
-- Class cancellation means cancelling a booked class.
-- Membership suspension means temporary pause, freeze, hold, or stop for a while.
-- Membership cancellation means ending membership permanently.
-- Do NOT treat membership cancellation as suspension.
-- If user says cancel, terminate, end, or quit membership, use [HANDOFF].
-- If user says pause, freeze, hold, suspend, temporary stop, travel freeze, medical freeze, going overseas, or cannot attend for a while, explain suspension policy.
-
-Suspension behaviour:
-- If user chooses Membership Suspension from the current member menu, first ask:
-  "Sure — is this for Medical Suspension or Non-Medical / Travel Suspension?"
-- Do not explain the full suspension policy until the user chooses the type.
-- If the user clearly says medical, doctor, physician, injury, doctor memo, or recovering from injury, explain Medical Suspension.
-- If the user clearly says travel, non-medical, overseas, holiday, going overseas, or cannot attend for a while, explain Non-Medical / Travel Suspension.
-- If the user is only asking about suspension, explain the correct suspension policy only.
-- End with:
-  "If you would like our Customer Service team to help you proceed, please reply PROCEED."
-- If the user clearly wants to proceed or replies PROCEED after suspension info, say:
-  "Thank you for your submission! Our Customer Care team will review your request and get back to you within 48 hours."
+- Do not repeat the same handoff message twice.
 
 Trial flow:
 - If user asks about trial, free trial, trial lesson, trail lesson, triel, beginner trial, or got trial anot, start trial flow.
@@ -568,6 +725,8 @@ Trial flow:
   2. Full Name
   3. Fitness Goal
   4. Show summary
+- Studio options:
+{studio_options_text()}
 - If user gives multiple details in one message, use them and ask only for the next missing detail.
 - Fitness Goal can be words, numbers, or decimals, for example flexibility, weight loss, 55, 55.5, lose 5kg.
 - Do not reject numeric fitness goals.
@@ -631,14 +790,24 @@ RECENT CHAT:
 {history_text}
 """
 
-    response = client.responses.create(
-        model=OPENAI_MODEL,
-        reasoning={"effort": "low"},
-        instructions=instructions,
-        input=user_text,
-    )
+    try:
+        response = client.responses.create(
+            model=OPENAI_MODEL,
+            reasoning={"effort": "low"},
+            instructions=instructions,
+            input=user_text,
+        )
 
-    answer = (response.output_text or "").strip()
+        answer = (response.output_text or "").strip()
+
+    except Exception as e:
+        print("OPENAI ERROR:", str(e))
+        traceback.print_exc()
+
+        answer = (
+            "I’m sorry — something went wrong while checking the information.\n"
+            "[HANDOFF]"
+        )
 
     if not answer:
         answer = (
@@ -726,35 +895,24 @@ def process_message(chat_id: str, user_text: str) -> str:
     if chat_id in PENDING_HANDOFFS:
         pending = PENDING_HANDOFFS.pop(chat_id)
 
-        selected_outlet = detect_outlet_from_text(clean_text)
+        route = route_message_with_llm(
+            chat_id,
+            clean_text,
+            mode="handoff_outlet_answer",
+        )
 
-        no_outlet_words = {
-            "no",
-            "nope",
-            "none",
-            "not sure",
-            "not specified",
-            "any",
-            "any outlet",
-            "no specific outlet",
-            "dont know",
-            "don't know",
-            "idk",
-            "unsure",
-        }
+        selected_outlet = route.get("outlet", "")
 
-        if not selected_outlet and normalize(clean_text) not in no_outlet_words:
+        if selected_outlet == "Not specified":
+            selected_outlet = ""
+
+        if not selected_outlet and not route.get("no_specific_outlet", False):
             PENDING_HANDOFFS[chat_id] = pending
 
             return (
                 "Sorry, which outlet is this about?\n\n"
                 "Please reply with one of these:\n"
-                "- Alexandra\n"
-                "- Katong\n"
-                "- Kovan\n"
-                "- Upper Bukit Timah\n"
-                "- Woodlands\n"
-                "- Not specified"
+                f"{studio_options_text(include_not_specified=True)}"
             )
 
         outlet_for_summary = selected_outlet if selected_outlet else "Not specified"
@@ -794,16 +952,29 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
     # =========================
-    # DIRECT OUTLET CONTACT REPLY
+    # LLM ROUTING BEFORE MAIN ANSWER
     # =========================
 
-    outlet_contact_reply = build_outlet_contact_reply(clean_text)
+    route = route_message_with_llm(chat_id, clean_text)
 
-    if outlet_contact_reply:
-        return outlet_contact_reply + "\n\nReply MENU to return to the main menu."
+    # Outlet contact request, e.g. "katong contact"
+    if route.get("intent") == "outlet_contact":
+        outlet = route.get("outlet", "")
+
+        if outlet and outlet != "Not specified":
+            outlet_contact_reply = build_outlet_contact_reply(outlet)
+
+            if outlet_contact_reply:
+                return outlet_contact_reply + "\n\nReply MENU to return to the main menu."
+
+        return (
+            "Which outlet contact would you like?\n\n"
+            f"{studio_options_text(include_not_specified=False)}\n\n"
+            "Reply MENU to return to the main menu."
+        )
 
     # =========================
-    # ASK LLM
+    # ASK MAIN LLM
     # =========================
 
     answer = ask_llm(chat_id, clean_text)
@@ -812,7 +983,6 @@ def process_message(chat_id: str, user_text: str) -> str:
         clean_answer = strip_handoff_token(answer).strip()
         detected_outlet = detect_outlet_from_text(clean_text + "\n" + clean_answer)
 
-        # NEW:
         # If Customer Service handoff is needed but no outlet is mentioned,
         # ask the user for outlet first.
         if not detected_outlet:
@@ -825,12 +995,7 @@ def process_message(chat_id: str, user_text: str) -> str:
                 "Before I pass this to our Customer Service team, "
                 "do you have a specific outlet for this enquiry?\n\n"
                 "Please reply with one of these:\n"
-                "- Alexandra\n"
-                "- Katong\n"
-                "- Kovan\n"
-                "- Upper Bukit Timah\n"
-                "- Woodlands\n"
-                "- Not specified"
+                f"{studio_options_text(include_not_specified=True)}"
             )
 
         save_request(
