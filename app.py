@@ -50,15 +50,15 @@ PENDING_HANDOFFS: Dict[str, Dict[str, str]] = {}
 INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 
 # 30 minutes = 1800 seconds
-# For testing, set this to 60 in Render
+# For testing, set this to 20 or 60 in Render
 INACTIVITY_WARNING_SECONDS = int(os.getenv("INACTIVITY_WARNING_SECONDS", "1800"))
 
 # 60 minutes total = warning after 30 min, close after another 30 min
-# For testing, set this to 120 in Render
+# For testing, set this to 40 or 120 in Render
 INACTIVITY_CLOSE_SECONDS = int(os.getenv("INACTIVITY_CLOSE_SECONDS", "3600"))
 
 # Bot checks inactivity every 60 seconds
-# For testing, set this to 10 in Render
+# For testing, set this to 5 or 10 in Render
 INACTIVITY_CHECK_SECONDS = int(os.getenv("INACTIVITY_CHECK_SECONDS", "60"))
 
 INACTIVITY_THREAD_STARTED = False
@@ -291,9 +291,21 @@ def mark_chat_active(chat_id: str) -> None:
         "closed": False,
     }
 
+    print(
+        f"INACTIVITY TIMER RESET for chat_id={chat_id}. "
+        f"Active chats={len(INACTIVITY_STATE)}",
+        flush=True,
+    )
+
 
 def clear_inactivity_state(chat_id: str) -> None:
     INACTIVITY_STATE.pop(chat_id, None)
+
+    print(
+        f"INACTIVITY STATE CLEARED for chat_id={chat_id}. "
+        f"Active chats={len(INACTIVITY_STATE)}",
+        flush=True,
+    )
 
 
 def is_opt_out_request(text: str) -> bool:
@@ -650,7 +662,7 @@ Examples:
         data = parse_json_reply(response.output_text or "")
 
     except Exception as e:
-        print("ROUTER ERROR:", str(e))
+        print("ROUTER ERROR:", str(e), flush=True)
         return default_result
 
     if not isinstance(data, dict):
@@ -836,7 +848,7 @@ RECENT CHAT:
         answer = (response.output_text or "").strip()
 
     except Exception as e:
-        print("OPENAI ERROR:", str(e))
+        print("OPENAI ERROR:", str(e), flush=True)
         traceback.print_exc()
 
         answer = (
@@ -1092,7 +1104,7 @@ def split_long_message(text: str, limit: int = 3900) -> List[str]:
 
 def send_telegram_message(chat_id: str, message: str) -> bool:
     if not TELEGRAM_BOT_TOKEN:
-        print("Missing TELEGRAM_BOT_TOKEN")
+        print("Missing TELEGRAM_BOT_TOKEN", flush=True)
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -1106,8 +1118,8 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
 
         response = requests.post(url, json=payload, timeout=30)
 
-        print("TELEGRAM SEND STATUS:", response.status_code)
-        print("TELEGRAM SEND RESPONSE:", response.text)
+        print("TELEGRAM SEND STATUS:", response.status_code, flush=True)
+        print("TELEGRAM SEND RESPONSE:", response.text, flush=True)
 
         response.raise_for_status()
 
@@ -1123,13 +1135,18 @@ def inactivity_checker_loop() -> None:
     Background loop for project/demo inactivity follow-up.
 
     Behaviour:
-    - After 30 minutes of no user reply, send a short reminder.
-    - After 60 minutes total of no user reply, auto-close and clear chat memory.
+    - After no reply for INACTIVITY_WARNING_SECONDS, send reminder.
+    - After no reply for INACTIVITY_CLOSE_SECONDS total, close chat.
     """
     while True:
         time.sleep(INACTIVITY_CHECK_SECONDS)
 
         now = time.time()
+
+        print(
+            f"INACTIVITY CHECK RUNNING | active_chats={len(INACTIVITY_STATE)}",
+            flush=True,
+        )
 
         for chat_id, state in list(INACTIVITY_STATE.items()):
             try:
@@ -1142,11 +1159,18 @@ def inactivity_checker_loop() -> None:
                 closed = bool(state.get("closed", False))
 
                 if closed:
+                    clear_inactivity_state(chat_id)
                     continue
 
                 idle_seconds = now - last_user_at
 
-                # 1. Send reminder after 30 minutes
+                print(
+                    f"CHECK chat_id={chat_id} | idle={int(idle_seconds)}s "
+                    f"| warning_sent={warning_sent}",
+                    flush=True,
+                )
+
+                # 1. Send reminder after the warning time
                 if not warning_sent and idle_seconds >= INACTIVITY_WARNING_SECONDS:
                     send_telegram_message(
                         chat_id,
@@ -1164,7 +1188,12 @@ def inactivity_checker_loop() -> None:
                         },
                     )
 
-                # 2. Auto-close after another 30 minutes
+                    print(
+                        f"INACTIVITY WARNING SENT to chat_id={chat_id}",
+                        flush=True,
+                    )
+
+                # 2. Auto-close after the close time
                 elif warning_sent and idle_seconds >= INACTIVITY_CLOSE_SECONDS:
                     send_telegram_message(
                         chat_id,
@@ -1185,8 +1214,15 @@ def inactivity_checker_loop() -> None:
                         },
                     )
 
+                    print(
+                        f"CHAT AUTO CLOSED for chat_id={chat_id}",
+                        flush=True,
+                    )
+
+                    clear_inactivity_state(chat_id)
+
             except Exception as e:
-                print("INACTIVITY CHECK ERROR:", str(e))
+                print("INACTIVITY CHECK ERROR:", str(e), flush=True)
                 traceback.print_exc()
 
 
@@ -1198,6 +1234,14 @@ def start_inactivity_checker() -> None:
 
     INACTIVITY_THREAD_STARTED = True
 
+    print(
+        "INACTIVITY CHECKER STARTED "
+        f"| warning={INACTIVITY_WARNING_SECONDS}s "
+        f"| close={INACTIVITY_CLOSE_SECONDS}s "
+        f"| check_every={INACTIVITY_CHECK_SECONDS}s",
+        flush=True,
+    )
+
     thread = threading.Thread(
         target=inactivity_checker_loop,
         daemon=True,
@@ -1206,7 +1250,13 @@ def start_inactivity_checker() -> None:
     thread.start()
 
 
-start_inactivity_checker()
+# =========================
+# START BACKGROUND CHECKER SAFELY
+# =========================
+
+@app.before_request
+def start_background_tasks():
+    start_inactivity_checker()
 
 
 # =========================
@@ -1237,6 +1287,33 @@ def health():
         {
             "status": "ok",
             "message": "healthy",
+            "inactivity_checker_started": INACTIVITY_THREAD_STARTED,
+            "active_inactivity_chats": len(INACTIVITY_STATE),
+        }
+    )
+
+
+@app.route("/debug/inactivity", methods=["GET"])
+def debug_inactivity():
+    safe_state = {}
+
+    for chat_id, state in INACTIVITY_STATE.items():
+        safe_state[chat_id[-4:]] = {
+            "seconds_since_last_user_message": int(
+                time.time() - float(state.get("last_user_at", time.time()))
+            ),
+            "warning_sent": bool(state.get("warning_sent", False)),
+            "closed": bool(state.get("closed", False)),
+        }
+
+    return jsonify(
+        {
+            "checker_started": INACTIVITY_THREAD_STARTED,
+            "warning_seconds": INACTIVITY_WARNING_SECONDS,
+            "close_seconds": INACTIVITY_CLOSE_SECONDS,
+            "check_seconds": INACTIVITY_CHECK_SECONDS,
+            "active_chat_count": len(INACTIVITY_STATE),
+            "chats": safe_state,
         }
     )
 
@@ -1247,6 +1324,7 @@ def telegram_webhook_test():
         {
             "status": "ok",
             "message": "Telegram webhook route exists. Telegram will use POST here.",
+            "inactivity_checker_started": INACTIVITY_THREAD_STARTED,
         }
     )
 
@@ -1286,11 +1364,16 @@ def telegram_webhook():
         return jsonify({"status": "ok"}), 200
 
     try:
+        print(
+            f"INCOMING TELEGRAM MESSAGE | chat_id={chat_id} | text={user_text}",
+            flush=True,
+        )
+
         reply = process_message(chat_id, user_text)
         send_telegram_message(chat_id, reply)
 
     except Exception as e:
-        print("ERROR:", str(e))
+        print("ERROR:", str(e), flush=True)
         traceback.print_exc()
 
         save_request(
@@ -1318,6 +1401,8 @@ def build_bot_reply(chat_id: str, user_text: str) -> str:
 
 
 if __name__ == "__main__":
+    start_inactivity_checker()
+
     app.run(
         host="0.0.0.0",
         port=PORT,
