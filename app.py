@@ -2154,15 +2154,9 @@ def process_message(chat_id: str, user_text: str) -> str:
         set_flow(chat_id, "trial_update_details")
 
         return (
-            "Sure — I can help update your trial booking.\n\n"
-            "Please send the new details like this:\n"
-            "- Sarah Tan, Upper Bukit Timah\n"
-            "- Ben Low, Kovan\n"
-            "- change my name to Amanda Lee\n"
-            "- change to Woodlands\n"
-            "- change my fitness goal to flexibility\n\n"
-            "Reply MENU to return to the main menu."
-        )
+    "Sure — what would you like to update for your trial booking?\n\n"
+    "Reply MENU to return to the main menu."
+)
 
     if is_reset_request(text):
         reset_history(chat_id)
@@ -2301,39 +2295,15 @@ def process_message(chat_id: str, user_text: str) -> str:
         if nothing_changed:
             set_flow(chat_id, "trial_update_details")
 
-            return (
-                "Sure — what would you like to update for your trial booking?\n\n"
-                "You can reply like this:\n"
-                "- Sarah Tan, Bukit Timah\n"
-                "- Ben Low, Kovan\n"
-                "- change my name to Amanda Lee\n"
-                "- change to Woodlands\n"
-                "- change my fitness goal to weight loss\n"
-                "- change to Katong and change my name to Muhammad Amir\n\n"
-                "Reply MENU to return to the main menu."
-            )
-
-        # If outlet is selected but name is still missing, ask for name first.
-        if updated.get("outlet") and not updated.get("name"):
-            TRIAL_BOOKINGS[chat_id] = updated
-            set_flow(chat_id, "trial_update_name")
-
-            return (
-                f"Great choice — {updated.get('outlet')}.\n\n"
-                "Which full name should we put for your trial booking?\n\n"
-                "Reply MENU to return to the main menu."
-            )
-
-        # If name is given but fitness goal is still missing, ask for fitness goal.
-        if updated.get("outlet") and updated.get("name") and not updated.get("fitness_goal"):
-            TRIAL_BOOKINGS[chat_id] = updated
-            set_flow(chat_id, "trial_update_goal")
-
-            return (
-                f"Thanks, {updated.get('name')}.\n\n"
-                "And finally, what is your fitness goal for the trial?\n\n"
-                "For example: flexibility, weight loss, strength, back pain relief, stress relief.\n\n"
-                "Reply MENU to return to the main menu."
+            return knowledge_reply(
+                chat_id,
+                text,
+                (
+                    "The customer wants to update their trial booking but has not provided the new details clearly. "
+                    "Ask them for the new name, outlet, or fitness goal. "
+                    "Give examples using any customer name, such as: Sarah Tan, Bukit Timah."
+                ),
+                "Sure — what would you like to update for your trial booking?"
             )
 
         sent = send_trial_booking_update_to_outlet(
@@ -2360,6 +2330,149 @@ def process_message(chat_id: str, user_text: str) -> str:
             reply += "\n\nYour updated details have been saved in this chat."
 
         return add_customer_service_id_note(reply, chat_id) + "\n\nReply MENU to return to the main menu."
+
+        if sent:
+            reply += f"\n\nI’ve sent the updated summary to the {updated.get('outlet')} team."
+        else:
+            reply += "\n\nYour updated details have been saved in this chat."
+
+        return add_customer_service_id_note(reply, chat_id) + "\n\nReply MENU to return to the main menu."
+
+    if chat_id in PENDING_HANDOFFS:
+        pending = PENDING_HANDOFFS.pop(chat_id)
+
+        route = route_message_with_llm(chat_id, text, mode="handoff_outlet_answer")
+
+        selected = route.get("outlet", "")
+
+        if selected == "Not specified":
+            selected = ""
+
+        if not selected and not route.get("no_specific_outlet", False):
+            PENDING_HANDOFFS[chat_id] = pending
+
+            return knowledge_reply(
+                chat_id,
+                text,
+                (
+                    "The customer service handoff needs an outlet, but the user did not provide a clear outlet. "
+                    "Ask which outlet this is about and show the studio list including Not specified."
+                ),
+                (
+                    "Sorry, which outlet is this about?\n\n"
+                    "Please reply with one of these:\n"
+                    f"{studio_options_text(include_not_specified=True)}"
+                ),
+            )
+
+        outlet = selected if selected else "Not specified"
+
+        clean_answer = replace_summary_outlet(pending["clean_answer"], outlet)
+
+        sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
+
+        team = f"{outlet} Customer Service team" if outlet != "Not specified" else "Customer Service team"
+
+        if sent:
+            return (
+                f"{clean_answer}\n\n"
+                f"I’ve sent this summary to our {team} on Telegram.\n\n"
+                "Reply MENU to return to the main menu."
+            )
+
+        return (
+            f"{clean_answer}\n\n"
+            "Customer Service Telegram group is not configured yet.\n\n"
+            "Reply MENU to return to the main menu."
+        )
+
+    if any(word in norm for word in ["trial", "free trial", "triel", "trail lesson", "trial lesson"]):
+        set_flow(chat_id, "trial_outlet")
+
+        reply = knowledge_reply(
+            chat_id,
+            text,
+            (
+                "The customer wants to schedule a trial class. "
+                "Ask which studio they prefer and show the studio options."
+            ),
+            (
+                "Sure — let’s schedule your trial class. 🙏\n\n"
+                "Which studio would you prefer?\n\n"
+                f"{studio_options_text()}"
+            ),
+        )
+
+        return reply + "\n\nReply MENU to return to the main menu."
+
+    if "refer" in norm and "friend" in norm:
+        set_flow(chat_id, "refer_friend_name")
+
+        reply = knowledge_reply(
+            chat_id,
+            text,
+            "The customer wants to refer a friend. Ask for the friend's full name.",
+            "That’s wonderful — what is your friend’s full name?",
+        )
+
+        return reply + "\n\nReply MENU to return to the main menu."
+
+    route = route_message_with_llm(chat_id, text)
+
+    if route.get("intent") == "outlet_contact":
+        outlet = route.get("outlet", "")
+
+        if outlet and outlet != "Not specified":
+            reply = build_outlet_contact_reply(outlet)
+
+            if reply:
+                return reply + "\n\nReply MENU to return to the main menu."
+
+        return knowledge_reply(
+            chat_id,
+            text,
+            "Ask which outlet contact the customer wants. Show the studio options.",
+            (
+                "Which outlet contact would you like?\n\n"
+                f"{studio_options_text()}"
+            ),
+        ) + "\n\nReply MENU to return to the main menu."
+
+    answer = ask_llm(chat_id, text)
+
+    if "[HANDOFF]" in answer:
+        clean_answer = strip_handoff_token(answer).strip()
+        outlet = detect_outlet_from_text(text + "\n" + clean_answer)
+
+        if not outlet:
+            PENDING_HANDOFFS[chat_id] = {
+                "user_message": text,
+                "clean_answer": clean_answer,
+            }
+
+            return ask_outlet_before_handoff_text(chat_id, text)
+
+        sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
+
+        if sent:
+            return (
+                f"{clean_answer}\n\n"
+                f"I’ve sent this summary to our {outlet} Customer Service team on Telegram.\n\n"
+                "Reply MENU to return to the main menu."
+            )
+
+        return (
+            f"{clean_answer}\n\n"
+            "Customer Service Telegram group is not configured yet.\n\n"
+            "Reply MENU to return to the main menu."
+        )
+
+    final_reply = strip_handoff_token(answer)
+
+    send_trial_booking_to_outlet(chat_id, final_reply)
+    send_refer_friend_to_outlet(chat_id, final_reply)
+
+    return add_customer_service_id_note(final_reply, chat_id) + "\n\nReply MENU to return to the main menu."
 
 
 
