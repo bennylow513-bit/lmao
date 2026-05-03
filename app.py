@@ -7,7 +7,6 @@ import traceback
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Dict, List
-from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import requests
@@ -30,10 +29,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "")
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
 
-# Optional WhatsApp number, mainly for website button/contact display
 CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
-
-# Optional fallback Telegram group for customer service handoff
 CUSTOMER_SERVICE_TELEGRAM_CHAT_ID = os.getenv("CUSTOMER_SERVICE_TELEGRAM_CHAT_ID", "")
 
 PORT = int(os.getenv("PORT", "5000"))
@@ -46,25 +42,13 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 # =========================
 
 CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
-
-# Stores customer service handoff summaries while waiting for user to choose outlet
 PENDING_HANDOFFS: Dict[str, Dict[str, str]] = {}
-
-# Stores completed trial bookings so user can change outlet later
 TRIAL_BOOKINGS: Dict[str, Dict[str, str]] = {}
-
-# If user says "change location" but does not say which outlet yet
-PENDING_TRIAL_LOCATION_CHANGE: Dict[str, bool] = {}
-
-# Stores inactivity timer state for each Telegram chat
+PENDING_TRIAL_UPDATE: Dict[str, bool] = {}
 INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 
-# =========================
-# INACTIVITY TIMING
-# =========================
 # 10 minutes = 600 seconds
-# 20 minutes total = reminder after 10 min, close after another 10 min
-
+# 20 minutes total = warning after 10 min, close after another 10 min
 INACTIVITY_WARNING_SECONDS = 600
 INACTIVITY_CLOSE_SECONDS = 1200
 INACTIVITY_CHECK_SECONDS = 30
@@ -73,6 +57,10 @@ INACTIVITY_THREAD_STARTED = False
 
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
 
+
+# =========================
+# OPT OUT STORAGE
+# =========================
 
 def load_opt_out_users() -> set:
     try:
@@ -112,12 +100,6 @@ KNOWLEDGE_TEXT = load_knowledge_text()
 
 
 def parse_studios(text: str) -> List[Dict[str, str]]:
-    """
-    Reads studio names and addresses from section 2. STUDIOS in knowledge.txt.
-
-    Expected format:
-    - Katong: 131 E Coast Rd, #03-01, Singapore 428816
-    """
     studios: List[Dict[str, str]] = []
     inside_studio_section = False
 
@@ -165,7 +147,6 @@ def parse_studios(text: str) -> List[Dict[str, str]]:
 
 STUDIOS = parse_studios(KNOWLEDGE_TEXT)
 
-# Backup only if knowledge.txt cannot be read properly
 if not STUDIOS:
     STUDIOS = [
         {
@@ -192,7 +173,7 @@ if not STUDIOS:
 
 
 # =========================
-# SAFETY / TEXT HELPERS
+# TEXT HELPERS
 # =========================
 
 OPT_OUT_WORDS = {
@@ -277,41 +258,8 @@ def add_history(chat_id: str, role: str, content: str) -> None:
 
 
 def save_request(kind: str, chat_id: str, payload: Dict) -> None:
-    """
-    Logging disabled.
-
-    This function is kept so the rest of the app will not break,
-    but it will not create requests_log.jsonl anymore.
-    """
+    # Logging disabled so requests_log.jsonl will not be created.
     return
-
-
-def mark_chat_active(chat_id: str) -> None:
-    """
-    Called whenever the user sends a message.
-    This resets the inactivity timer.
-    """
-    INACTIVITY_STATE[chat_id] = {
-        "last_user_at": time.time(),
-        "warning_sent": False,
-        "closed": False,
-    }
-
-    print(
-        f"INACTIVITY TIMER RESET for chat_id={chat_id}. "
-        f"Active chats={len(INACTIVITY_STATE)}",
-        flush=True,
-    )
-
-
-def clear_inactivity_state(chat_id: str) -> None:
-    INACTIVITY_STATE.pop(chat_id, None)
-
-    print(
-        f"INACTIVITY STATE CLEARED for chat_id={chat_id}. "
-        f"Active chats={len(INACTIVITY_STATE)}",
-        flush=True,
-    )
 
 
 def is_opt_out_request(text: str) -> bool:
@@ -340,29 +288,6 @@ def strip_handoff_token(text: str) -> str:
     return text.replace("[HANDOFF]", "").strip()
 
 
-def add_customer_service_id_note(reply: str, chat_id: str) -> str:
-    """
-    Adds a customer service ID note to completed summary replies.
-    """
-    summary_triggers = [
-        "Trial Booking Summary:",
-        "Refer-a-Friend Summary:",
-        "Corporate / Partnership Summary:",
-        "Corporate/Partnership Summary:",
-        "Staff Hub Summary:",
-    ]
-
-    if any(trigger in reply for trigger in summary_triggers):
-        return (
-            f"{reply}\n\n"
-            f"If you need any further assistance, please quote this Customer Service ID "
-            f"so our team can find your request quickly:\n"
-            f"{chat_id}"
-        )
-
-    return reply
-
-
 def clean_number(number: str) -> str:
     return (
         str(number)
@@ -373,8 +298,107 @@ def clean_number(number: str) -> str:
     )
 
 
+def add_customer_service_id_note(reply: str, chat_id: str) -> str:
+    summary_triggers = [
+        "Trial Booking Summary:",
+        "Updated Trial Booking Summary:",
+        "Refer-a-Friend Summary:",
+        "Corporate / Partnership Summary:",
+        "Corporate/Partnership Summary:",
+        "Staff Hub Summary:",
+    ]
+
+    if any(trigger in reply for trigger in summary_triggers):
+        return (
+            f"{reply}\n\n"
+            "If you need any further assistance, please quote this Customer Service ID "
+            "so our team can find your request quickly:\n"
+            f"{chat_id}"
+        )
+
+    return reply
+
+
 # =========================
-# STUDIO / OUTLET HELPERS
+# TRIAL UPDATE EXTRACTORS
+# =========================
+
+def extract_updated_name(text: str) -> str:
+    patterns = [
+        r"(?:change|chnage|update|switch)\s+my\s+name\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
+        r"(?:change|chnage|update|switch)\s+name\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
+        r"(?:name)\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+
+        if match:
+            name = match.group(1).strip(" .,!?:;")
+            return " ".join(word.capitalize() for word in name.split())
+
+    return ""
+
+
+def extract_updated_fitness_goal(text: str) -> str:
+    patterns = [
+        r"(?:change|chnage|update|switch)\s+(?:my\s+)?(?:fitness\s+goal|goal)\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
+        r"(?:fitness\s+goal|goal)\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+
+        if match:
+            return match.group(1).strip(" .,!?:;")
+
+    return ""
+
+
+def is_trial_update_request(text: str) -> bool:
+    t = normalize(text)
+
+    trigger_phrases = [
+        "change my trial",
+        "update my trial",
+        "change trial",
+        "update trial",
+        "change booking",
+        "update booking",
+        "change my booking",
+        "update my booking",
+        "change outlet",
+        "change location",
+        "change studio",
+        "switch outlet",
+        "switch location",
+        "switch studio",
+        "change to",
+        "move to",
+        "change my name",
+        "chnage my name",
+        "update my name",
+        "change name",
+        "update name",
+        "change my goal",
+        "update my goal",
+        "change goal",
+        "update goal",
+        "change my fitness goal",
+        "update my fitness goal",
+        "change fitness goal",
+        "update fitness goal",
+        "change everything",
+        "change all",
+        "update everything",
+        "update all",
+    ]
+
+    return any(phrase in t for phrase in trigger_phrases)
+
+
+# =========================
+# OUTLET HELPERS
 # =========================
 
 def studio_names() -> List[str]:
@@ -408,9 +432,6 @@ def studio_aliases(studio_name: str) -> List[str]:
 
 
 def detect_outlet_from_text(text: str) -> str:
-    """
-    Uses studio names from knowledge.txt and fuzzy matching for typos.
-    """
     clean = simple_text(text)
 
     if not clean:
@@ -449,10 +470,6 @@ def detect_outlet_from_text(text: str) -> str:
 
 
 def env_key_for_outlet(outlet_name: str) -> str:
-    """
-    Example:
-    Upper Bukit Timah -> UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER
-    """
     key = re.sub(r"[^A-Za-z0-9]+", "_", outlet_name.upper()).strip("_")
     return f"{key}_WHATSAPP_NUMBER"
 
@@ -462,24 +479,12 @@ def outlet_whatsapp_number(outlet_name: str) -> str:
 
 
 def env_key_for_outlet_telegram_chat(outlet_name: str) -> str:
-    """
-    Example:
-    Upper Bukit Timah -> UPPER_BUKIT_TIMAH_TELEGRAM_CHAT_ID
-    Katong -> KATONG_TELEGRAM_CHAT_ID
-    """
     key = re.sub(r"[^A-Za-z0-9]+", "_", outlet_name.upper()).strip("_")
     return f"{key}_TELEGRAM_CHAT_ID"
 
 
 def outlet_telegram_chat_id(outlet_name: str) -> str:
     return os.getenv(env_key_for_outlet_telegram_chat(outlet_name), "")
-
-
-def outlet_whatsapp_numbers() -> Dict[str, str]:
-    return {
-        studio["name"]: outlet_whatsapp_number(studio["name"])
-        for studio in STUDIOS
-    }
 
 
 def get_studio_address(outlet_name: str) -> str:
@@ -490,12 +495,6 @@ def get_studio_address(outlet_name: str) -> str:
     return ""
 
 
-# =========================
-# WHATSAPP LINK HELPERS
-# Used only for website/contact display.
-# Customer service handoff now sends to Telegram groups.
-# =========================
-
 def customer_service_link() -> str:
     number = clean_number(CUSTOMER_SERVICE_WHATSAPP_NUMBER)
 
@@ -503,16 +502,6 @@ def customer_service_link() -> str:
         return ""
 
     return f"https://wa.me/{number}"
-
-
-def build_prefilled_whatsapp_link(number: str, message: str) -> str:
-    clean = clean_number(number)
-
-    if not clean or clean.upper() == "TBC":
-        return ""
-
-    encoded_message = quote(message, safe="")
-    return f"https://wa.me/{clean}?text={encoded_message}"
 
 
 def build_outlet_contact_reply(outlet: str) -> str:
@@ -544,7 +533,6 @@ def build_outlet_contact_reply(outlet: str) -> str:
 def replace_summary_outlet(summary_text: str, outlet: str) -> str:
     lines = summary_text.splitlines()
     new_lines = []
-
     outlet_replaced = False
 
     for line in lines:
@@ -617,12 +605,6 @@ def parse_json_reply(text: str) -> Dict:
 
 
 def route_message_with_llm(chat_id: str, user_text: str, mode: str = "normal") -> Dict:
-    """
-    Small LLM router.
-    Purpose:
-    - Detect outlet contact requests
-    - Detect outlet answer while pending customer service handoff
-    """
     outlet_guess = detect_outlet_from_text(user_text)
 
     default_result = {
@@ -676,7 +658,6 @@ Understand typos and casual Singapore phrasing.
     try:
         response = client.responses.create(
             model=OPENAI_MODEL,
-            reasoning={"effort": "low"},
             instructions=instructions,
             input=f"Recent chat:\n{history_text}\n\nUser message:\n{user_text}",
         )
@@ -782,11 +763,6 @@ Summary:
 
 [HANDOFF]
 
-Important:
-- If [HANDOFF] is used and the outlet is unknown, write "- Outlet: Not specified".
-- The app will ask the user for a specific outlet before sending the Telegram Customer Service handoff.
-- Do not repeat the same handoff message twice.
-
 Trial flow:
 - If user asks about trial, free trial, trial lesson, trail lesson, triel, beginner trial, or got trial anot, start trial flow.
 - Ask one question at a time:
@@ -842,13 +818,6 @@ Outlet and contact number:
 Address:
 <outlet address>
 
-- Do not include "Outlet Contact Summary".
-- Do not repeat the phone number twice.
-- Do not add a long explanation.
-- If outlet number is TBC but main Customer Service exists, give main Customer Service.
-- If no number is confirmed, use [HANDOFF].
-- Do not invent numbers.
-
 Menu:
 If user asks for menu, start, /start, home, main menu, restart, hi, hello, or hey, show the Jal Yoga main menu from the knowledge.
 
@@ -873,7 +842,6 @@ RECENT CHAT:
     try:
         response = client.responses.create(
             model=OPENAI_MODEL,
-            reasoning={"effort": "low"},
             instructions=instructions,
             input=user_text,
         )
@@ -958,11 +926,6 @@ def send_customer_service_handoff_to_telegram(
     clean_answer: str,
     outlet: str,
 ) -> bool:
-    """
-    Sends customer service handoff summary to the correct outlet Telegram group.
-    If outlet chat ID is missing, uses CUSTOMER_SERVICE_TELEGRAM_CHAT_ID fallback.
-    """
-
     target_chat_id = ""
 
     if outlet and outlet != "Not specified":
@@ -986,22 +949,10 @@ def send_customer_service_handoff_to_telegram(
 
     try:
         send_telegram_message(target_chat_id, message)
-
-        save_request(
-            "customer_service_handoff_sent_to_telegram",
-            customer_chat_id,
-            {
-                "outlet": outlet,
-                "target_chat_id": target_chat_id,
-                "summary": clean_answer,
-            },
-        )
-
         print(
             f"CUSTOMER SERVICE HANDOFF SENT to outlet={outlet}, chat_id={target_chat_id}",
             flush=True,
         )
-
         return True
 
     except Exception as e:
@@ -1014,7 +965,7 @@ def send_customer_service_handoff_to_telegram(
 
 
 # =========================
-# SEND TRIAL BOOKING TO OUTLET GROUP
+# TRIAL BOOKING SEND / UPDATE
 # =========================
 
 def parse_trial_booking_summary(customer_reply: str) -> Dict[str, str]:
@@ -1043,22 +994,14 @@ def parse_trial_booking_summary(customer_reply: str) -> Dict[str, str]:
 
 
 def send_trial_booking_to_outlet(customer_chat_id: str, customer_reply: str) -> None:
-    """
-    If the bot reply contains a Trial Booking Summary,
-    send it to the correct outlet Telegram group.
-    """
-
     if "Trial Booking Summary:" not in customer_reply:
         return
 
     booking = parse_trial_booking_summary(customer_reply)
 
-    outlet = booking.get("outlet", "")
+    outlet = booking.get("outlet", "") or detect_outlet_from_text(customer_reply)
     name = booking.get("name", "")
     fitness_goal = booking.get("fitness_goal", "")
-
-    if not outlet:
-        outlet = detect_outlet_from_text(customer_reply)
 
     if not outlet:
         print("TRIAL BOOKING SEND SKIPPED: No outlet detected", flush=True)
@@ -1092,17 +1035,6 @@ def send_trial_booking_to_outlet(customer_chat_id: str, customer_reply: str) -> 
             "fitness_goal": fitness_goal,
         }
 
-        save_request(
-            "trial_booking_sent_to_outlet",
-            customer_chat_id,
-            {
-                "outlet": outlet,
-                "outlet_chat_id": outlet_chat_id,
-                "name": name,
-                "fitness_goal": fitness_goal,
-            },
-        )
-
         print(
             f"TRIAL BOOKING SENT to outlet={outlet}, chat_id={outlet_chat_id}",
             flush=True,
@@ -1121,17 +1053,12 @@ def send_trial_booking_update_to_outlet(
     booking: Dict[str, str],
     old_outlet: str = "",
 ) -> bool:
-    """
-    Sends updated trial booking to the new outlet group.
-    Also warns the old outlet if the outlet changed.
-    """
-
     new_outlet = booking.get("outlet", "")
     name = booking.get("name", "")
     fitness_goal = booking.get("fitness_goal", "")
 
     if not new_outlet:
-        print("TRIAL BOOKING UPDATE SKIPPED: No new outlet", flush=True)
+        print("TRIAL BOOKING UPDATE SKIPPED: No outlet", flush=True)
         return False
 
     new_outlet_chat_id = outlet_telegram_chat_id(new_outlet)
@@ -1145,7 +1072,7 @@ def send_trial_booking_update_to_outlet(
 
     update_message = (
         "Updated Trial Booking Received 🔄\n\n"
-        f"New Outlet: {new_outlet}\n"
+        f"Outlet: {new_outlet}\n"
         f"Previous Outlet: {old_outlet or 'Not specified'}\n"
         "Class: Trial Class\n"
         f"Name: {name or 'Not provided'}\n"
@@ -1157,20 +1084,8 @@ def send_trial_booking_update_to_outlet(
     try:
         send_telegram_message(new_outlet_chat_id, update_message)
 
-        save_request(
-            "trial_booking_location_changed_sent_to_new_outlet",
-            customer_chat_id,
-            {
-                "old_outlet": old_outlet,
-                "new_outlet": new_outlet,
-                "new_outlet_chat_id": new_outlet_chat_id,
-                "name": name,
-                "fitness_goal": fitness_goal,
-            },
-        )
-
         print(
-            f"TRIAL BOOKING UPDATE SENT to new_outlet={new_outlet}, chat_id={new_outlet_chat_id}",
+            f"TRIAL BOOKING UPDATE SENT to outlet={new_outlet}, chat_id={new_outlet_chat_id}",
             flush=True,
         )
 
@@ -1202,7 +1117,7 @@ def send_trial_booking_update_to_outlet(
 
 
 # =========================
-# SEND REFER-A-FRIEND TO OUTLET GROUP
+# REFER FRIEND SEND
 # =========================
 
 def parse_refer_friend_summary(customer_reply: str) -> Dict[str, str]:
@@ -1231,11 +1146,6 @@ def parse_refer_friend_summary(customer_reply: str) -> Dict[str, str]:
 
 
 def send_refer_friend_to_outlet(customer_chat_id: str, customer_reply: str) -> None:
-    """
-    If the bot reply contains a Refer-a-Friend Summary,
-    send it to the correct outlet Telegram group.
-    """
-
     if "Refer-a-Friend Summary:" not in customer_reply:
         return
 
@@ -1243,10 +1153,7 @@ def send_refer_friend_to_outlet(customer_chat_id: str, customer_reply: str) -> N
 
     friend_name = referral.get("friend_name", "")
     friend_contact = referral.get("friend_contact", "")
-    preferred_studio = referral.get("preferred_studio", "")
-
-    if not preferred_studio:
-        preferred_studio = detect_outlet_from_text(customer_reply)
+    preferred_studio = referral.get("preferred_studio", "") or detect_outlet_from_text(customer_reply)
 
     if not preferred_studio:
         print("REFER FRIEND SEND SKIPPED: No preferred studio detected", flush=True)
@@ -1273,17 +1180,6 @@ def send_refer_friend_to_outlet(customer_chat_id: str, customer_reply: str) -> N
     try:
         send_telegram_message(outlet_chat_id, outlet_message)
 
-        save_request(
-            "refer_friend_sent_to_outlet",
-            customer_chat_id,
-            {
-                "preferred_studio": preferred_studio,
-                "outlet_chat_id": outlet_chat_id,
-                "friend_name": friend_name,
-                "friend_contact": friend_contact,
-            },
-        )
-
         print(
             f"REFER FRIEND SENT to outlet={preferred_studio}, chat_id={outlet_chat_id}",
             flush=True,
@@ -1295,6 +1191,125 @@ def send_refer_friend_to_outlet(customer_chat_id: str, customer_reply: str) -> N
             flush=True,
         )
         traceback.print_exc()
+
+
+# =========================
+# INACTIVITY
+# =========================
+
+def mark_chat_active(chat_id: str) -> None:
+    INACTIVITY_STATE[chat_id] = {
+        "last_user_at": time.time(),
+        "warning_sent": False,
+        "closed": False,
+    }
+
+    print(
+        f"INACTIVITY TIMER RESET for chat_id={chat_id}. "
+        f"Active chats={len(INACTIVITY_STATE)}",
+        flush=True,
+    )
+
+
+def clear_inactivity_state(chat_id: str) -> None:
+    INACTIVITY_STATE.pop(chat_id, None)
+
+    print(
+        f"INACTIVITY STATE CLEARED for chat_id={chat_id}. "
+        f"Active chats={len(INACTIVITY_STATE)}",
+        flush=True,
+    )
+
+
+def inactivity_checker_loop() -> None:
+    while True:
+        time.sleep(INACTIVITY_CHECK_SECONDS)
+
+        now = time.time()
+
+        print(
+            f"INACTIVITY CHECK RUNNING | active_chats={len(INACTIVITY_STATE)}",
+            flush=True,
+        )
+
+        for chat_id, state in list(INACTIVITY_STATE.items()):
+            try:
+                if chat_id in OPT_OUT_USERS:
+                    clear_inactivity_state(chat_id)
+                    continue
+
+                last_user_at = float(state.get("last_user_at", now))
+                warning_sent = bool(state.get("warning_sent", False))
+                closed = bool(state.get("closed", False))
+
+                if closed:
+                    clear_inactivity_state(chat_id)
+                    continue
+
+                idle_seconds = now - last_user_at
+
+                print(
+                    f"CHECK chat_id={chat_id} | idle={int(idle_seconds)}s | warning_sent={warning_sent}",
+                    flush=True,
+                )
+
+                if not warning_sent and idle_seconds >= INACTIVITY_WARNING_SECONDS:
+                    send_telegram_message(
+                        chat_id,
+                        "Just checking in — do you still need help? "
+                        "Reply here to continue, or type STOP to stop receiving follow-up messages.",
+                    )
+
+                    state["warning_sent"] = True
+
+                    print(
+                        f"INACTIVITY WARNING SENT to chat_id={chat_id}",
+                        flush=True,
+                    )
+
+                elif warning_sent and idle_seconds >= INACTIVITY_CLOSE_SECONDS:
+                    send_telegram_message(
+                        chat_id,
+                        "We’ll close this chat for now. "
+                        "If you need help again, reply START or MENU anytime. 🙏",
+                    )
+
+                    reset_history(chat_id)
+                    PENDING_HANDOFFS.pop(chat_id, None)
+                    PENDING_TRIAL_UPDATE.pop(chat_id, None)
+
+                    state["closed"] = True
+
+                    print(
+                        f"CHAT AUTO CLOSED for chat_id={chat_id}",
+                        flush=True,
+                    )
+
+                    clear_inactivity_state(chat_id)
+
+            except Exception as e:
+                print("INACTIVITY CHECK ERROR:", str(e), flush=True)
+                traceback.print_exc()
+
+
+def start_inactivity_checker() -> None:
+    global INACTIVITY_THREAD_STARTED
+
+    if INACTIVITY_THREAD_STARTED:
+        return
+
+    INACTIVITY_THREAD_STARTED = True
+
+    print(
+        "INACTIVITY CHECKER STARTED "
+        f"| warning={INACTIVITY_WARNING_SECONDS}s "
+        f"| close={INACTIVITY_CLOSE_SECONDS}s "
+        f"| check_every={INACTIVITY_CHECK_SECONDS}s",
+        flush=True,
+    )
+
+    thread = threading.Thread(target=inactivity_checker_loop, daemon=True)
+    thread.start()
 
 
 # =========================
@@ -1313,16 +1328,8 @@ def process_message(chat_id: str, user_text: str) -> str:
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
         TRIAL_BOOKINGS.pop(chat_id, None)
-        PENDING_TRIAL_LOCATION_CHANGE.pop(chat_id, None)
+        PENDING_TRIAL_UPDATE.pop(chat_id, None)
         clear_inactivity_state(chat_id)
-
-        save_request(
-            "user_opted_out",
-            chat_id,
-            {
-                "user_message": clean_text,
-            },
-        )
 
         return (
             "Noted — you have been unsubscribed and will not receive follow-up messages.\n"
@@ -1336,31 +1343,14 @@ def process_message(chat_id: str, user_text: str) -> str:
         PENDING_HANDOFFS.pop(chat_id, None)
         mark_chat_active(chat_id)
 
-        save_request(
-            "user_opted_in",
-            chat_id,
-            {
-                "user_message": clean_text,
-            },
-        )
-
         return "Welcome back — you are subscribed again. Type MENU to see Jal Yoga options."
 
     if chat_id in OPT_OUT_USERS:
         return "You have opted out. Reply START if you want to chat with Jal Yoga again."
 
-    # Reset the inactivity timer whenever the user sends a valid message
     mark_chat_active(chat_id)
 
     if contains_sensitive_keyword(clean_text):
-        save_request(
-            "sensitive_info_blocked",
-            chat_id,
-            {
-                "preview": clean_text[:120],
-            },
-        )
-
         return (
             "For your safety, please do not share NRIC, passport numbers, full card numbers, "
             "CVV, OTP, passwords, or bank details here.\n\n"
@@ -1368,48 +1358,48 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
     # =========================
-    # HANDLE TRIAL LOCATION CHANGE AFTER SUMMARY
+    # UPDATE TRIAL BOOKING AFTER SUMMARY
     # =========================
 
-    location_change_words = [
-        "change location",
-        "change outlet",
-        "change studio",
-        "switch location",
-        "switch outlet",
-        "switch studio",
-        "change to",
-        "move to",
-        "can change",
-        "want change",
-    ]
+    new_outlet = detect_outlet_from_text(clean_text)
+    new_name = extract_updated_name(clean_text)
+    new_fitness_goal = extract_updated_fitness_goal(clean_text)
 
-    is_location_change = any(
-        phrase in normalize(clean_text)
-        for phrase in location_change_words
+    wants_trial_update = (
+        is_trial_update_request(clean_text)
+        or bool(new_name)
+        or bool(new_fitness_goal)
+        or chat_id in PENDING_TRIAL_UPDATE
     )
 
-    if chat_id in TRIAL_BOOKINGS and (
-        is_location_change or chat_id in PENDING_TRIAL_LOCATION_CHANGE
-    ):
-        new_outlet = detect_outlet_from_text(clean_text)
-
-        if not new_outlet:
-            PENDING_TRIAL_LOCATION_CHANGE[chat_id] = True
-
-            return (
-                "Sure — which outlet would you like to change your trial booking to?\n\n"
-                f"{studio_options_text(include_not_specified=False)}"
-            )
-
+    if chat_id in TRIAL_BOOKINGS and wants_trial_update:
         old_booking = TRIAL_BOOKINGS[chat_id]
         old_outlet = old_booking.get("outlet", "")
 
         updated_booking = {
-            "outlet": new_outlet,
-            "name": old_booking.get("name", ""),
-            "fitness_goal": old_booking.get("fitness_goal", ""),
+            "outlet": new_outlet or old_booking.get("outlet", ""),
+            "name": new_name or old_booking.get("name", ""),
+            "fitness_goal": new_fitness_goal or old_booking.get("fitness_goal", ""),
         }
+
+        nothing_changed = (
+            updated_booking["outlet"] == old_booking.get("outlet", "")
+            and updated_booking["name"] == old_booking.get("name", "")
+            and updated_booking["fitness_goal"] == old_booking.get("fitness_goal", "")
+        )
+
+        if nothing_changed:
+            PENDING_TRIAL_UPDATE[chat_id] = True
+
+            return (
+                "Sure — what would you like to update for your trial booking?\n\n"
+                "You can reply like this:\n"
+                "- change to Kovan\n"
+                "- change my name to Kelvin\n"
+                "- change my fitness goal to weight loss\n"
+                "- change to Kovan and change my name to Kelvin\n"
+                "- change to Woodlands and change my name to Kelvin and change my fitness goal to lose 5kg"
+            )
 
         sent = send_trial_booking_update_to_outlet(
             chat_id,
@@ -1418,25 +1408,25 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
         TRIAL_BOOKINGS[chat_id] = updated_booking
-        PENDING_TRIAL_LOCATION_CHANGE.pop(chat_id, None)
+        PENDING_TRIAL_UPDATE.pop(chat_id, None)
 
         if sent:
-            return (
-                "No problem — I’ve updated your trial booking location.\n\n"
+            updated_reply = (
+                "No problem — I’ve updated your trial booking.\n\n"
                 "Updated Trial Booking Summary:\n"
-                f"- Outlet: {new_outlet}\n"
+                f"- Outlet: {updated_booking.get('outlet') or 'Not provided'}\n"
                 "- Class: Trial Class\n"
                 f"- Name: {updated_booking.get('name') or 'Not provided'}\n"
                 f"- Fitness Goal: {updated_booking.get('fitness_goal') or 'Not provided'}\n\n"
-                f"I’ve sent the updated summary to the {new_outlet} team.\n\n"
-                "If you need any further assistance, please quote this Customer Service ID "
-                "so our team can find your request quickly:\n"
-                f"{chat_id}\n\n"
-                "Reply MENU to return to the main menu."
+                f"I’ve sent the updated summary to the {updated_booking.get('outlet')} team."
             )
 
+            updated_reply = add_customer_service_id_note(updated_reply, chat_id)
+
+            return updated_reply + "\n\nReply MENU to return to the main menu."
+
         return (
-            "I’ve updated your trial booking location in this chat, but I could not send it to the outlet group.\n\n"
+            "I’ve updated your trial booking in this chat, but I could not send it to the outlet group.\n\n"
             "Please check that the outlet Telegram chat ID is added correctly in Render.\n\n"
             "Reply MENU to return to the main menu."
         )
@@ -1446,7 +1436,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         PENDING_HANDOFFS.pop(chat_id, None)
 
     # =========================
-    # HANDLE PENDING HANDOFF OUTLET QUESTION
+    # PENDING CUSTOMER SERVICE HANDOFF OUTLET
     # =========================
 
     if chat_id in PENDING_HANDOFFS:
@@ -1479,16 +1469,6 @@ def process_message(chat_id: str, user_text: str) -> str:
             outlet_for_summary,
         )
 
-        save_request(
-            "customer_service_handoff",
-            chat_id,
-            {
-                "user_message": pending["user_message"],
-                "selected_outlet": outlet_for_summary,
-                "llm_answer": clean_answer,
-            },
-        )
-
         sent_to_telegram = send_customer_service_handoff_to_telegram(
             chat_id,
             clean_answer,
@@ -1505,7 +1485,7 @@ def process_message(chat_id: str, user_text: str) -> str:
             return (
                 f"{clean_answer}\n\n"
                 f"I’ve sent this summary to our {team_name} on Telegram.\n\n"
-                f"Reply MENU to return to the main menu."
+                "Reply MENU to return to the main menu."
             )
 
         return (
@@ -1515,12 +1495,11 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
     # =========================
-    # LLM ROUTING BEFORE MAIN ANSWER
+    # OUTLET CONTACT REQUEST
     # =========================
 
     route = route_message_with_llm(chat_id, clean_text)
 
-    # Outlet contact request, e.g. "katong contact"
     if route.get("intent") == "outlet_contact":
         outlet = route.get("outlet", "")
 
@@ -1546,8 +1525,6 @@ def process_message(chat_id: str, user_text: str) -> str:
         clean_answer = strip_handoff_token(answer).strip()
         detected_outlet = detect_outlet_from_text(clean_text + "\n" + clean_answer)
 
-        # If Customer Service handoff is needed but no outlet is mentioned,
-        # ask the user for outlet first.
         if not detected_outlet:
             PENDING_HANDOFFS[chat_id] = {
                 "user_message": clean_text,
@@ -1561,15 +1538,6 @@ def process_message(chat_id: str, user_text: str) -> str:
                 f"{studio_options_text(include_not_specified=True)}"
             )
 
-        save_request(
-            "customer_service_handoff",
-            chat_id,
-            {
-                "user_message": clean_text,
-                "llm_answer": clean_answer,
-            },
-        )
-
         sent_to_telegram = send_customer_service_handoff_to_telegram(
             chat_id,
             clean_answer,
@@ -1580,7 +1548,7 @@ def process_message(chat_id: str, user_text: str) -> str:
             return (
                 f"{clean_answer}\n\n"
                 f"I’ve sent this summary to our {detected_outlet} Customer Service team on Telegram.\n\n"
-                f"Reply MENU to return to the main menu."
+                "Reply MENU to return to the main menu."
             )
 
         return (
@@ -1591,153 +1559,22 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     final_reply = strip_handoff_token(answer).strip()
 
-    # Send summaries to the correct outlet Telegram group if applicable
     send_trial_booking_to_outlet(chat_id, final_reply)
     send_refer_friend_to_outlet(chat_id, final_reply)
 
-    # Add customer service ID note for completed summaries
     final_reply = add_customer_service_id_note(final_reply, chat_id)
 
     return final_reply + "\n\nReply MENU to return to the main menu."
 
 
 # =========================
-# INACTIVITY CHECKER
-# =========================
-
-def inactivity_checker_loop() -> None:
-    """
-    Background loop for project/demo inactivity follow-up.
-
-    Behaviour:
-    - After no reply for INACTIVITY_WARNING_SECONDS, send reminder.
-    - After no reply for INACTIVITY_CLOSE_SECONDS total, close chat.
-    """
-    while True:
-        time.sleep(INACTIVITY_CHECK_SECONDS)
-
-        now = time.time()
-
-        print(
-            f"INACTIVITY CHECK RUNNING | active_chats={len(INACTIVITY_STATE)}",
-            flush=True,
-        )
-
-        for chat_id, state in list(INACTIVITY_STATE.items()):
-            try:
-                if chat_id in OPT_OUT_USERS:
-                    clear_inactivity_state(chat_id)
-                    continue
-
-                last_user_at = float(state.get("last_user_at", now))
-                warning_sent = bool(state.get("warning_sent", False))
-                closed = bool(state.get("closed", False))
-
-                if closed:
-                    clear_inactivity_state(chat_id)
-                    continue
-
-                idle_seconds = now - last_user_at
-
-                print(
-                    f"CHECK chat_id={chat_id} | idle={int(idle_seconds)}s "
-                    f"| warning_sent={warning_sent}",
-                    flush=True,
-                )
-
-                # 1. Send reminder after the warning time
-                if not warning_sent and idle_seconds >= INACTIVITY_WARNING_SECONDS:
-                    send_telegram_message(
-                        chat_id,
-                        "Just checking in — do you still need help? "
-                        "Reply here to continue, or type STOP to stop receiving follow-up messages.",
-                    )
-
-                    state["warning_sent"] = True
-
-                    save_request(
-                        "inactivity_warning_sent",
-                        chat_id,
-                        {
-                            "idle_seconds": int(idle_seconds),
-                        },
-                    )
-
-                    print(
-                        f"INACTIVITY WARNING SENT to chat_id={chat_id}",
-                        flush=True,
-                    )
-
-                # 2. Auto-close after the close time
-                elif warning_sent and idle_seconds >= INACTIVITY_CLOSE_SECONDS:
-                    send_telegram_message(
-                        chat_id,
-                        "We’ll close this chat for now. "
-                        "If you need help again, reply START or MENU anytime. 🙏",
-                    )
-
-                    reset_history(chat_id)
-                    PENDING_HANDOFFS.pop(chat_id, None)
-                    PENDING_TRIAL_LOCATION_CHANGE.pop(chat_id, None)
-
-                    state["closed"] = True
-
-                    save_request(
-                        "chat_auto_closed",
-                        chat_id,
-                        {
-                            "idle_seconds": int(idle_seconds),
-                        },
-                    )
-
-                    print(
-                        f"CHAT AUTO CLOSED for chat_id={chat_id}",
-                        flush=True,
-                    )
-
-                    clear_inactivity_state(chat_id)
-
-            except Exception as e:
-                print("INACTIVITY CHECK ERROR:", str(e), flush=True)
-                traceback.print_exc()
-
-
-def start_inactivity_checker() -> None:
-    global INACTIVITY_THREAD_STARTED
-
-    if INACTIVITY_THREAD_STARTED:
-        return
-
-    INACTIVITY_THREAD_STARTED = True
-
-    print(
-        "INACTIVITY CHECKER STARTED "
-        f"| warning={INACTIVITY_WARNING_SECONDS}s "
-        f"| close={INACTIVITY_CLOSE_SECONDS}s "
-        f"| check_every={INACTIVITY_CHECK_SECONDS}s",
-        flush=True,
-    )
-
-    thread = threading.Thread(
-        target=inactivity_checker_loop,
-        daemon=True,
-    )
-
-    thread.start()
-
-
-# =========================
-# START BACKGROUND CHECKER SAFELY
+# ROUTES
 # =========================
 
 @app.before_request
 def start_background_tasks():
     start_inactivity_checker()
 
-
-# =========================
-# ROUTES
-# =========================
 
 @app.route("/", methods=["GET"])
 def home():
@@ -1749,12 +1586,19 @@ def home():
 
     whatsapp_link = customer_service_link() or "#"
 
-    return render_template(
-        "index.html",
-        telegram_link=telegram_link,
-        whatsapp_link=whatsapp_link,
-        studios=STUDIOS,
-    )
+    try:
+        return render_template(
+            "index.html",
+            telegram_link=telegram_link,
+            whatsapp_link=whatsapp_link,
+            studios=STUDIOS,
+        )
+    except Exception:
+        return f"""
+        <h1>Jal Yoga Telegram Bot</h1>
+        <p>Server is running.</p>
+        <p><a href="{telegram_link}">Open Telegram Bot</a></p>
+        """
 
 
 @app.route("/health", methods=["GET"])
@@ -1885,8 +1729,6 @@ def telegram_webhook():
         flush=True,
     )
 
-    # Outlet groups are for receiving booking summaries.
-    # We log their chat IDs, but we do not let the bot reply to staff group messages.
     if chat_type in {"group", "supergroup", "channel"}:
         return jsonify(
             {
@@ -1902,7 +1744,6 @@ def telegram_webhook():
             chat_id,
             "I can currently handle text messages only. Please type your message, or type MENU.",
         )
-
         return jsonify({"status": "ok"}), 200
 
     try:
@@ -1917,15 +1758,6 @@ def telegram_webhook():
     except Exception as e:
         print("ERROR:", str(e), flush=True)
         traceback.print_exc()
-
-        save_request(
-            "server_error",
-            chat_id,
-            {
-                "user_text": user_text,
-                "error": str(e),
-            },
-        )
 
         try:
             send_telegram_message(
