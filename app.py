@@ -1249,6 +1249,71 @@ def extract_updated_fitness_goal(text: str) -> str:
     return ""
 
 
+
+def extract_name_from_update_details(text: str, outlet: str) -> str:
+    """
+    Accepts any name when the user replies with update details, for example:
+    - Kelvin, Bukit Timah
+    - Ben Low, Kovan
+    - Sarah Tan, Woodlands
+    - Muhammad Amir, Katong
+    """
+
+    if not text:
+        return ""
+
+    # Split by comma, slash, semicolon, pipe, or the word "and"
+    parts = [
+        part.strip()
+        for part in re.split(r"[,;/|]+|\band\b", text, flags=re.IGNORECASE)
+        if part.strip()
+    ]
+
+    for part in parts:
+        # Skip the part that is clearly an outlet
+        if detect_outlet_from_text(part):
+            continue
+
+        cleaned = re.sub(
+            r"\b(change|update|switch|my|the|name|outlet|studio|location|to|into)\b",
+            " ",
+            part,
+            flags=re.IGNORECASE,
+        )
+
+        cleaned = re.sub(r"[^A-Za-z\s]", " ", cleaned)
+        cleaned = " ".join(cleaned.split()).strip()
+
+        if len(cleaned) >= 2:
+            return " ".join(word.capitalize() for word in cleaned.split())
+
+    # Fallback: remove outlet words from the full sentence
+    cleaned = text
+
+    if outlet:
+        for alias in studio_aliases(outlet):
+            cleaned = re.sub(
+                rf"\b{re.escape(alias)}\b",
+                " ",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+
+    cleaned = re.sub(
+        r"\b(change|update|switch|my|the|name|outlet|studio|location|to|into|and)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    cleaned = re.sub(r"[^A-Za-z\s]", " ", cleaned)
+    cleaned = " ".join(cleaned.split()).strip()
+
+    if len(cleaned) >= 2:
+        return " ".join(word.capitalize() for word in cleaned.split())
+
+    return ""
+
 def is_trial_update_request(text: str) -> bool:
     t = normalize(text)
 
@@ -1282,6 +1347,13 @@ def is_trial_update_request(text: str) -> bool:
         "update my fitness goal",
         "change fitness goal",
         "update fitness goal",
+        "the name and the outlet",
+        "name and outlet",
+        "outlet and name",
+        "change name and outlet",
+        "change outlet and name",
+        "update name and outlet",
+        "update outlet and name",
         "change everything",
         "update everything",
     ]
@@ -1829,7 +1901,23 @@ def process_message(chat_id: str, user_text: str) -> str:
     new_name = extract_updated_name(text)
     new_goal = extract_updated_fitness_goal(text)
 
-    if chat_id in TRIAL_BOOKINGS and (is_trial_update_request(text) or new_name or new_goal):
+    # If user first says "change name and outlet",
+    # then replies "Ben Low, Bukit Timah",
+    # this extracts "Ben Low" as the new name.
+    if not new_name and get_flow_stage(chat_id) == "trial_update_details":
+        new_name = extract_name_from_update_details(text, new_outlet)
+
+    wants_trial_update = (
+        chat_id in TRIAL_BOOKINGS
+        and (
+            is_trial_update_request(text)
+            or bool(new_name)
+            or bool(new_goal)
+            or get_flow_stage(chat_id) == "trial_update_details"
+        )
+    )
+
+    if wants_trial_update:
         old = TRIAL_BOOKINGS[chat_id]
 
         updated = {
@@ -1838,22 +1926,32 @@ def process_message(chat_id: str, user_text: str) -> str:
             "fitness_goal": new_goal or old.get("fitness_goal", ""),
         }
 
-        if updated == old:
+        nothing_changed = (
+            updated["outlet"] == old.get("outlet", "")
+            and updated["name"] == old.get("name", "")
+            and updated["fitness_goal"] == old.get("fitness_goal", "")
+        )
+
+        if nothing_changed:
+            set_flow(chat_id, "trial_update_details")
+
             return knowledge_reply(
                 chat_id,
                 text,
                 (
-                    "The customer wants to update their trial booking but did not provide a clear new outlet, name, or fitness goal. "
-                    "Ask what they want to update and give examples."
+                    "The customer wants to update their trial booking but has not provided the new details clearly. "
+                    "Ask them for the new name, outlet, or fitness goal. "
+                    "Give examples using any customer name, such as: Sarah Tan, Bukit Timah."
                 ),
                 (
                     "Sure — what would you like to update for your trial booking?\n\n"
                     "You can reply like this:\n"
-                    "- change to Kovan\n"
-                    "- change my name to Kelvin\n"
+                    "- Sarah Tan, Bukit Timah\n"
+                    "- Ben Low, Kovan\n"
+                    "- change my name to Amanda Lee\n"
+                    "- change to Woodlands\n"
                     "- change my fitness goal to weight loss\n"
-                    "- change to Kovan and change my name to Kelvin\n"
-                    "- change to Woodlands and change my name to Kelvin and change my fitness goal to lose 5kg"
+                    "- change to Katong and change my name to Muhammad Amir"
                 ),
             )
 
@@ -1864,6 +1962,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
         TRIAL_BOOKINGS[chat_id] = updated
+        clear_flow(chat_id)
 
         if sent:
             reply = (
