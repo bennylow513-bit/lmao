@@ -431,6 +431,20 @@ def outlet_whatsapp_number(outlet_name: str) -> str:
     return os.getenv(env_key_for_outlet(outlet_name), "")
 
 
+def env_key_for_outlet_telegram_chat(outlet_name: str) -> str:
+    """
+    Example:
+    Upper Bukit Timah -> UPPER_BUKIT_TIMAH_TELEGRAM_CHAT_ID
+    Katong -> KATONG_TELEGRAM_CHAT_ID
+    """
+    key = re.sub(r"[^A-Za-z0-9]+", "_", outlet_name.upper()).strip("_")
+    return f"{key}_TELEGRAM_CHAT_ID"
+
+
+def outlet_telegram_chat_id(outlet_name: str) -> str:
+    return os.getenv(env_key_for_outlet_telegram_chat(outlet_name), "")
+
+
 def outlet_whatsapp_numbers() -> Dict[str, str]:
     return {
         studio["name"]: outlet_whatsapp_number(studio["name"])
@@ -541,7 +555,8 @@ def live_contact_config_text() -> str:
     for studio in STUDIOS:
         name = studio["name"]
         number = outlet_whatsapp_number(name) or "TBC"
-        outlet_lines.append(f"- {name}: {number}")
+        telegram_chat_id = outlet_telegram_chat_id(name) or "TBC"
+        outlet_lines.append(f"- {name}: WhatsApp={number}, Telegram Chat ID={telegram_chat_id}")
 
     outlet_text = "\n".join(outlet_lines)
 
@@ -551,14 +566,14 @@ LIVE CUSTOMER SERVICE CONFIG FROM RENDER
 Main Customer Service WhatsApp:
 - {CUSTOMER_SERVICE_WHATSAPP_NUMBER or "TBC"}
 
-Outlet WhatsApp Numbers:
+Outlet Contacts:
 {outlet_text}
 
 Rules:
 - You may use these numbers only if they are not TBC.
 - If an outlet number is TBC, do not invent it.
 - If main Customer Service is available, use the main Customer Service link for handoff.
-- For handoff, the app will create a WhatsApp link with the summary prefilled.
+- For trial bookings, the app may send the summary to the outlet Telegram group if the outlet Telegram chat ID is configured.
 """
 
 
@@ -1073,7 +1088,12 @@ def process_message(chat_id: str, user_text: str) -> str:
             "Reply MENU to return to the main menu."
         )
 
-    return strip_handoff_token(answer).strip() + "\n\nReply MENU to return to the main menu."
+    final_reply = strip_handoff_token(answer).strip()
+
+    # Send trial booking summary to the correct outlet Telegram group if this is a trial booking
+    send_trial_booking_to_outlet(chat_id, final_reply)
+
+    return final_reply + "\n\nReply MENU to return to the main menu."
 
 
 # =========================
@@ -1122,6 +1142,88 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
         response.raise_for_status()
 
     return True
+
+
+# =========================
+# SEND TRIAL BOOKING TO OUTLET GROUP
+# =========================
+
+def send_trial_booking_to_outlet(customer_chat_id: str, customer_reply: str) -> None:
+    """
+    If the bot reply contains a Trial Booking Summary,
+    send it to the correct outlet Telegram group.
+    """
+
+    if "Trial Booking Summary:" not in customer_reply:
+        return
+
+    outlet = ""
+    name = ""
+    fitness_goal = ""
+
+    for line in customer_reply.splitlines():
+        clean_line = line.strip()
+
+        if clean_line.lower().startswith("- outlet:"):
+            outlet = clean_line.split(":", 1)[1].strip()
+
+        elif clean_line.lower().startswith("- name:"):
+            name = clean_line.split(":", 1)[1].strip()
+
+        elif clean_line.lower().startswith("- fitness goal:"):
+            fitness_goal = clean_line.split(":", 1)[1].strip()
+
+    if not outlet:
+        outlet = detect_outlet_from_text(customer_reply)
+
+    if not outlet:
+        print("TRIAL BOOKING SEND SKIPPED: No outlet detected", flush=True)
+        return
+
+    outlet_chat_id = outlet_telegram_chat_id(outlet)
+
+    if not outlet_chat_id:
+        print(
+            f"TRIAL BOOKING SEND SKIPPED: Missing Telegram chat ID for outlet={outlet}",
+            flush=True,
+        )
+        return
+
+    outlet_message = (
+        "New Trial Booking Received 🙏\n\n"
+        f"Outlet: {outlet}\n"
+        "Class: Trial Class\n"
+        f"Name: {name or 'Not provided'}\n"
+        f"Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
+        f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
+        "Please contact the customer within 24 hours."
+    )
+
+    try:
+        send_telegram_message(outlet_chat_id, outlet_message)
+
+        save_request(
+            "trial_booking_sent_to_outlet",
+            customer_chat_id,
+            {
+                "outlet": outlet,
+                "outlet_chat_id": outlet_chat_id,
+                "name": name,
+                "fitness_goal": fitness_goal,
+            },
+        )
+
+        print(
+            f"TRIAL BOOKING SENT to outlet={outlet}, chat_id={outlet_chat_id}",
+            flush=True,
+        )
+
+    except Exception as e:
+        print(
+            f"TRIAL BOOKING SEND ERROR for outlet={outlet}: {str(e)}",
+            flush=True,
+        )
+        traceback.print_exc()
 
 
 # =========================
@@ -1287,6 +1389,9 @@ def health():
             "message": "healthy",
             "inactivity_checker_started": INACTIVITY_THREAD_STARTED,
             "active_inactivity_chats": len(INACTIVITY_STATE),
+            "warning_seconds": INACTIVITY_WARNING_SECONDS,
+            "close_seconds": INACTIVITY_CLOSE_SECONDS,
+            "check_seconds": INACTIVITY_CHECK_SECONDS,
         }
     )
 
@@ -1316,6 +1421,29 @@ def debug_inactivity():
     )
 
 
+@app.route("/debug/outlets", methods=["GET"])
+def debug_outlets():
+    outlet_data = {}
+
+    for studio in STUDIOS:
+        name = studio["name"]
+        outlet_data[name] = {
+            "address": studio["address"],
+            "telegram_chat_id_configured": bool(outlet_telegram_chat_id(name)),
+            "telegram_chat_id_last_4": outlet_telegram_chat_id(name)[-4:]
+            if outlet_telegram_chat_id(name)
+            else "",
+            "env_key": env_key_for_outlet_telegram_chat(name),
+        }
+
+    return jsonify(
+        {
+            "status": "ok",
+            "outlets": outlet_data,
+        }
+    )
+
+
 @app.route("/telegram/webhook", methods=["GET"])
 def telegram_webhook_test():
     return jsonify(
@@ -1340,18 +1468,42 @@ def telegram_webhook():
 
     update = request.get_json(silent=True) or {}
 
-    message = update.get("message") or update.get("edited_message")
+    message = (
+        update.get("message")
+        or update.get("edited_message")
+        or update.get("channel_post")
+        or update.get("edited_channel_post")
+    )
 
     if not message:
         return jsonify({"status": "ignored", "reason": "no message"}), 200
 
     chat = message.get("chat", {})
     chat_id = str(chat.get("id", ""))
+    chat_type = chat.get("type", "")
 
     if not chat_id:
         return jsonify({"status": "ignored", "reason": "no chat id"}), 200
 
     user_text = message.get("text", "")
+
+    print(
+        f"INCOMING TELEGRAM UPDATE | chat_id={chat_id} | chat_type={chat_type} | text={user_text}",
+        flush=True,
+    )
+
+    # Important:
+    # Outlet groups are for receiving booking summaries.
+    # We log their chat IDs, but we do not let the bot reply to staff group messages.
+    if chat_type in {"group", "supergroup", "channel"}:
+        return jsonify(
+            {
+                "status": "ignored",
+                "reason": "group_or_channel_message_logged",
+                "chat_id": chat_id,
+                "chat_type": chat_type,
+            }
+        ), 200
 
     if not user_text:
         send_telegram_message(
@@ -1363,7 +1515,7 @@ def telegram_webhook():
 
     try:
         print(
-            f"INCOMING TELEGRAM MESSAGE | chat_id={chat_id} | text={user_text}",
+            f"INCOMING CUSTOMER MESSAGE | chat_id={chat_id} | text={user_text}",
             flush=True,
         )
 
