@@ -34,6 +34,7 @@ CUSTOMER_SERVICE_TELEGRAM_CHAT_ID = os.getenv("CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
 
 PORT = int(os.getenv("PORT", "5000"))
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
+SCHEDULE_FILE = os.getenv("SCHEDULE_FILE", "schedule.json")
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -48,7 +49,6 @@ TRIAL_BOOKINGS: Dict[str, Dict[str, str]] = {}
 FLOW_STATE: Dict[str, Dict[str, str]] = {}
 INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 USER_LANGUAGE: Dict[str, str] = {}
-LAST_MENU_SHOWN: Dict[str, str] = {}
 
 INACTIVITY_WARNING_SECONDS = 600
 INACTIVITY_CLOSE_SECONDS = 1200
@@ -168,7 +168,6 @@ def load_knowledge_text() -> str:
     try:
         with open("knowledge.txt", "r", encoding="utf-8") as f:
             return f.read().strip()
-
     except FileNotFoundError:
         return ""
 
@@ -216,12 +215,7 @@ def parse_studios(text: str) -> List[Dict[str, str]]:
             continue
 
         if not any(s["name"].lower() == name.lower() for s in studios):
-            studios.append(
-                {
-                    "name": name,
-                    "address": address,
-                }
-            )
+            studios.append({"name": name, "address": address})
 
     return studios
 
@@ -264,45 +258,6 @@ def studio_options_text(include_not_specified: bool = False) -> str:
         options.append("- Not specified")
 
     return "\n".join(options)
-
-def numbered_studio_options_text(include_not_specified: bool = False) -> str:
-    options = []
-
-    for index, name in enumerate(studio_names(), start=1):
-        options.append(f"{index}. {name}")
-
-    if include_not_specified:
-        options.append(f"{len(studio_names()) + 1}. Not specified")
-
-    return "\n".join(options)
-
-
-def outlet_from_number_or_text(text: str, include_not_specified: bool = False) -> str:
-    choice = normalize(text)
-    studios = studio_names()
-
-    if choice.isdigit():
-        number = int(choice)
-
-        if 1 <= number <= len(studios):
-            return studios[number - 1]
-
-        if include_not_specified and number == len(studios) + 1:
-            return "Not specified"
-
-    if include_not_specified and choice in {
-        "not specified",
-        "no",
-        "no specific outlet",
-        "any",
-        "any outlet",
-        "not sure",
-        "idk",
-        "does not matter",
-    }:
-        return "Not specified"
-
-    return detect_outlet_from_text(text)
 
 
 def studio_aliases(studio_name: str) -> List[str]:
@@ -478,18 +433,6 @@ def clear_flow(chat_id: str) -> None:
     FLOW_STATE.pop(chat_id, None)
 
 
-def remember_menu(chat_id: str, menu_name: str) -> None:
-    LAST_MENU_SHOWN[chat_id] = menu_name
-
-
-def get_last_menu(chat_id: str) -> str:
-    return LAST_MENU_SHOWN.get(chat_id, "")
-
-
-def clear_last_menu(chat_id: str) -> None:
-    LAST_MENU_SHOWN.pop(chat_id, None)
-
-
 def add_menu_hint(reply: str) -> str:
     if "Reply MENU to return to the main menu." in reply:
         return reply
@@ -530,20 +473,6 @@ def is_reset_request(text: str) -> bool:
 def contains_sensitive_keyword(text: str) -> bool:
     t = normalize(text)
     return any(keyword in t for keyword in SENSITIVE_KEYWORDS)
-
-
-def is_english_request(text: str) -> bool:
-    t = normalize(text)
-
-    return t in {
-        "english",
-        "english?",
-        "reply in english",
-        "can you speak english",
-        "speak english",
-        "use english",
-        "change to english",
-    }
 
 
 def is_meaning_question(text: str) -> bool:
@@ -637,10 +566,6 @@ def detect_user_language(chat_id: str, user_text: str) -> str:
 
     if text.isdigit():
         return USER_LANGUAGE.get(chat_id, "English")
-
-    if is_english_request(user_text):
-        USER_LANGUAGE[chat_id] = "English"
-        return "English"
 
     if text in {"salve", "ola", "olá", "oi", "bom dia", "boa tarde", "boa noite"}:
         USER_LANGUAGE[chat_id] = "Portuguese"
@@ -883,11 +808,8 @@ def add_customer_service_id_note(reply: str, chat_id: str) -> str:
 # MENU TEXT
 # =========================
 
-def main_menu_text(chat_id: str, user_text: str) -> str:
-    set_flow(chat_id, "main_menu")
-    remember_menu(chat_id, "main_menu")
-
-    fallback = (
+def main_menu_text() -> str:
+    return (
         "Namaste! Thank you for reaching out to Jal Yoga. 🙏\n\n"
         "To help us handle your request as quickly as possible, please let us know what you're looking for today:\n\n"
         "1. Schedule a Trial\n"
@@ -899,24 +821,9 @@ def main_menu_text(chat_id: str, user_text: str) -> str:
         "Reply STOP anytime to stop receiving follow-up messages."
     )
 
-    return knowledge_reply(
-        chat_id,
-        user_text,
-        (
-            "Show the MAIN MENU from the knowledge file. "
-            "Keep the exact menu number structure. "
-            "The menu must include Schedule a Trial, current member, find out more about Jal Yoga, "
-            "Corporate/Partnerships, and Staff Hub."
-        ),
-        fallback,
-    )
 
-
-def current_member_menu_text(chat_id: str, user_text: str) -> str:
-    set_flow(chat_id, "current_member_menu")
-    remember_menu(chat_id, "current_member_menu")
-
-    fallback = (
+def current_member_menu_text() -> str:
+    return (
         "Welcome back! Hope your practice is going well. 🙏\n\n"
         "How can I help you with your membership today?\n\n"
         "1. Class Cancellation\n"
@@ -925,23 +832,9 @@ def current_member_menu_text(chat_id: str, user_text: str) -> str:
         "4. I would like to refer a friend"
     )
 
-    return knowledge_reply(
-        chat_id,
-        user_text,
-        (
-            "Show the CURRENT MEMBER menu from the knowledge file. "
-            "Keep the exact menu number structure. "
-            "The menu must include Class Cancellation, Membership Suspension, Class Booking Help, and Refer a Friend."
-        ),
-        fallback,
-    )
 
-
-def general_enquiry_menu_text(chat_id: str, user_text: str) -> str:
-    set_flow(chat_id, "general_enquiry_menu")
-    remember_menu(chat_id, "general_enquiry_menu")
-
-    fallback = (
+def general_enquiry_menu_text() -> str:
+    return (
         "General Enquiry 🙏\n\n"
         "What would you like to know more about?\n\n"
         "1. Studio Locations & Operating Hours\n"
@@ -949,33 +842,12 @@ def general_enquiry_menu_text(chat_id: str, user_text: str) -> str:
         "3. Current Events & Retreat"
     )
 
-    return knowledge_reply(
-        chat_id,
-        user_text,
-        (
-            "Show the GENERAL ENQUIRY menu from the knowledge file. "
-            "Keep the exact menu number structure. "
-            "The menu must include Studio Locations & Operating Hours, Class Types, and Current Events & Retreat."
-        ),
-        fallback,
-    )
 
-
-def ask_outlet_before_handoff_text(chat_id: str, user_text: str) -> str:
-    fallback = (
+def ask_outlet_before_handoff_text() -> str:
+    return (
         "Before I pass this to our Customer Service team, do you have a specific outlet for this enquiry?\n\n"
         "Please reply with one of these:\n"
-        f"{numbered_studio_options_text(include_not_specified=True)}"
-    )
-
-    return knowledge_reply(
-        chat_id,
-        user_text,
-        (
-            "Ask the customer whether this Customer Service enquiry is about a specific outlet. "
-            "Show all studio options from the knowledge file and include Not specified."
-        ),
-        fallback,
+        f"{studio_options_text(include_not_specified=True)}"
     )
 
 
@@ -992,8 +864,7 @@ def split_long_message(text: str, limit: int = 3900) -> List[str]:
 
     for line in text.splitlines():
         if len(current) + len(line) + 1 > limit:
-            if current:
-                chunks.append(current)
+            chunks.append(current)
             current = line
         else:
             current += "\n" + line if current else line
@@ -1066,23 +937,6 @@ def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answe
         return False
 
 
-def replace_summary_outlet(summary_text: str, outlet: str) -> str:
-    lines = []
-    replaced = False
-
-    for line in summary_text.splitlines():
-        if line.strip().lower().startswith("- outlet:"):
-            lines.append(f"- Outlet: {outlet}")
-            replaced = True
-        else:
-            lines.append(line)
-
-    if not replaced:
-        lines.append(f"- Outlet: {outlet}")
-
-    return "\n".join(lines)
-
-
 # =========================
 # TRIAL BOOKING
 # =========================
@@ -1131,7 +985,6 @@ def send_trial_booking_to_outlet(customer_chat_id: str, booking: Dict[str, str])
     try:
         send_telegram_message(target_chat_id, message)
         return True
-
     except Exception as e:
         print("TRIAL BOOKING SEND ERROR:", str(e), flush=True)
         traceback.print_exc()
@@ -1170,7 +1023,6 @@ def send_refer_friend_to_outlet(customer_chat_id: str, referral: Dict[str, str])
     try:
         send_telegram_message(target_chat_id, message)
         return True
-
     except Exception as e:
         print("REFER FRIEND SEND ERROR:", str(e), flush=True)
         traceback.print_exc()
@@ -1178,10 +1030,10 @@ def send_refer_friend_to_outlet(customer_chat_id: str, referral: Dict[str, str])
 
 
 # =========================
-# PYTHON-ONLY SCHEDULE
+# LIVE SCHEDULE FROM JSON
 # =========================
 
-SCHEDULE_DATA = {
+DEFAULT_SCHEDULE = {
     "updated": "2026-05-04",
     "studios": {
         "Alexandra": [
@@ -1242,6 +1094,24 @@ def is_schedule_request(text: str) -> bool:
     ]
 
     return any(keyword in t for keyword in keywords)
+
+
+def load_schedule_data() -> dict:
+    try:
+        with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict) and data.get("studios"):
+            return data
+
+    except FileNotFoundError:
+        print("SCHEDULE FILE NOT FOUND. Using default schedule.", flush=True)
+
+    except Exception as e:
+        print("SCHEDULE LOAD ERROR:", str(e), flush=True)
+        traceback.print_exc()
+
+    return DEFAULT_SCHEDULE
 
 
 def requested_day_from_text(text: str) -> str:
@@ -1316,14 +1186,16 @@ def format_one_outlet_schedule(outlet: str, classes: list, day_filter: str = "")
 
 
 def live_schedule_reply(chat_id: str, user_text: str) -> str:
-    studios_data = SCHEDULE_DATA.get("studios", {})
-    updated = SCHEDULE_DATA.get("updated", "TBC")
+    schedule_data = load_schedule_data()
+    studios_data = schedule_data.get("studios", {})
+    updated = schedule_data.get("updated", "TBC")
 
     requested_outlet = detect_outlet_from_text(user_text)
     day_filter = requested_day_from_text(user_text)
 
     if requested_outlet:
         classes = studios_data.get(requested_outlet, [])
+
         title_day = f" for {day_filter}" if day_filter else ""
 
         return (
@@ -1402,7 +1274,6 @@ def inactivity_checker_loop() -> None:
                     PENDING_HANDOFFS.pop(chat_id, None)
                     TRIAL_BOOKINGS.pop(chat_id, None)
                     clear_flow(chat_id)
-                    clear_last_menu(chat_id)
                     clear_inactivity_state(chat_id)
 
             except Exception as e:
@@ -1434,28 +1305,27 @@ def handle_main_menu_choice(chat_id: str, text: str) -> str:
     choice = normalize(text)
 
     if choice == "1":
-        clear_last_menu(chat_id)
         set_flow(chat_id, "trial_outlet")
 
         return (
             "Sure — let’s schedule your trial class. 🙏\n\n"
             "Which studio would you prefer?\n\n"
-            f"{numbered_studio_options_text()}"
+            f"{studio_options_text()}"
         )
 
     if choice == "2":
-        return current_member_menu_text(chat_id, text)
+        set_flow(chat_id, "current_member_menu")
+        return current_member_menu_text()
 
     if choice == "3":
-        return general_enquiry_menu_text(chat_id, text)
+        set_flow(chat_id, "general_enquiry_menu")
+        return general_enquiry_menu_text()
 
     if choice == "4":
-        clear_last_menu(chat_id)
         set_flow(chat_id, "corporate_name")
         return "Sure — may I have your full name?"
 
     if choice == "5":
-        clear_last_menu(chat_id)
         set_flow(chat_id, "staff_name")
         return "Staff Hub 🙏\n\nMay I have the staff name?"
 
@@ -1467,7 +1337,6 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
 
     if choice == "1":
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         return (
             "Class Cancellation Policy 🙏\n\n"
@@ -1484,7 +1353,6 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
 
     if choice == "2":
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         return (
             "Sure — is this for Medical Suspension or Non-Medical / Travel Suspension?\n\n"
@@ -1494,7 +1362,6 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
 
     if choice == "3":
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         return (
             "Sure — I can help with class booking questions.\n\n"
@@ -1506,11 +1373,10 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
         )
 
     if choice == "4":
-        clear_last_menu(chat_id)
         set_flow(chat_id, "refer_friend_name")
         return "That’s wonderful — what is your friend’s full name?"
 
-    return current_member_menu_text(chat_id, text)
+    return current_member_menu_text()
 
 
 def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
@@ -1518,7 +1384,6 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
 
     if choice == "1":
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         lines = ["Studio Locations 🙏", ""]
 
@@ -1533,7 +1398,6 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
 
     if choice == "2":
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         return knowledge_reply(
             chat_id,
@@ -1551,7 +1415,6 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
 
     if choice == "3":
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         return knowledge_reply(
             chat_id,
@@ -1564,7 +1427,7 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
             "For the latest events and retreats, please contact Customer Service.",
         )
 
-    return general_enquiry_menu_text(chat_id, text)
+    return general_enquiry_menu_text()
 
 
 # =========================
@@ -1576,12 +1439,12 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
 
     if stage == "trial_outlet":
-        outlet = outlet_from_number_or_text(text)
+        outlet = detect_outlet_from_text(text)
 
         if not outlet:
             return (
                 "Which studio would you prefer?\n\n"
-                f"{numbered_studio_options_text()}"
+                f"{studio_options_text()}"
             )
 
         set_flow(chat_id, "trial_name", outlet=outlet)
@@ -1632,7 +1495,6 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
             return "Please share your fitness goal."
 
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         booking = {
             "outlet": outlet,
@@ -1686,16 +1548,16 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
 
         return (
             "Which studio would your friend prefer?\n\n"
-            f"{numbered_studio_options_text()}"
+            f"{studio_options_text()}"
         )
 
     if stage == "refer_friend_studio":
-        outlet = outlet_from_number_or_text(text)
+        outlet = detect_outlet_from_text(text)
 
         if not outlet:
             return (
                 "Please choose one of these studios:\n\n"
-                f"{numbered_studio_options_text()}"
+                f"{studio_options_text()}"
             )
 
         referral = {
@@ -1705,7 +1567,6 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
         }
 
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         send_refer_friend_to_outlet(chat_id, referral)
 
@@ -1768,7 +1629,6 @@ def handle_corporate_flow(chat_id: str, text: str) -> str:
             return "Please briefly tell us what your Corporate / Partnership enquiry is about."
 
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         clean_answer = (
             "I’ll pass this to our Customer Service team.\n\n"
@@ -1867,7 +1727,6 @@ def handle_staff_hub_flow(chat_id: str, text: str) -> str:
             return "Please share the member and booking details."
 
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
 
         clean_answer = (
             "I’ll pass this to our Customer Service team.\n\n"
@@ -1907,18 +1766,20 @@ def handle_pending_handoff_outlet(chat_id: str, text: str) -> str:
         outlet = detect_outlet_from_text(text)
 
     if not outlet:
-        return ask_outlet_before_handoff_text(chat_id, text)
+        return ask_outlet_before_handoff_text()
 
     pending = PENDING_HANDOFFS.pop(chat_id, {})
     clear_flow(chat_id)
-    clear_last_menu(chat_id)
 
     clean_answer = pending.get(
         "clean_answer",
         "I’ll pass this to our Customer Service team.",
     )
 
-    clean_answer = replace_summary_outlet(clean_answer, outlet)
+    if "- Outlet:" in clean_answer:
+        clean_answer = re.sub(r"- Outlet:.*", f"- Outlet: {outlet}", clean_answer)
+    else:
+        clean_answer += f"\n- Outlet: {outlet}"
 
     sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
 
@@ -1993,7 +1854,6 @@ def process_message(chat_id: str, user_text: str) -> str:
         PENDING_HANDOFFS.pop(chat_id, None)
         TRIAL_BOOKINGS.pop(chat_id, None)
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
         clear_inactivity_state(chat_id)
 
         return (
@@ -2006,11 +1866,10 @@ def process_message(chat_id: str, user_text: str) -> str:
         save_opt_out_users()
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
-        clear_flow(chat_id)
-        clear_last_menu(chat_id)
+        set_flow(chat_id, "main_menu")
         mark_chat_active(chat_id)
 
-        return finish_reply(chat_id, text, main_menu_text(chat_id, text))
+        return finish_reply(chat_id, text, main_menu_text())
 
     if chat_id in OPT_OUT_USERS:
         return "You have opted out. Reply START if you want to chat with Jal Yoga again."
@@ -2029,58 +1888,36 @@ def process_message(chat_id: str, user_text: str) -> str:
             ),
         )
 
-    stage = get_flow_stage(chat_id)
-    last_menu = get_last_menu(chat_id)
-
-    if is_english_request(text):
-        USER_LANGUAGE[chat_id] = "English"
-
-        if stage == "current_member_menu" or last_menu == "current_member_menu":
-            reply = "Of course — I’ll reply in English.\n\n" + current_member_menu_text(chat_id, text)
-
-        elif stage == "general_enquiry_menu" or last_menu == "general_enquiry_menu":
-            reply = "Of course — I’ll reply in English.\n\n" + general_enquiry_menu_text(chat_id, text)
-
-        else:
-            reply = "Of course — I’ll reply in English.\n\n" + main_menu_text(chat_id, text)
-
-        return finish_reply(chat_id, text, reply)
-
     if is_reset_request(text):
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
         clear_flow(chat_id)
-        clear_last_menu(chat_id)
+        set_flow(chat_id, "main_menu")
 
-        return finish_reply(chat_id, text, main_menu_text(chat_id, text))
+        return finish_reply(chat_id, text, main_menu_text())
 
     if is_schedule_request(text):
         reply = live_schedule_reply(chat_id, text)
         return finish_reply(chat_id, text, reply)
 
     stage = get_flow_stage(chat_id)
-    last_menu = get_last_menu(chat_id)
-
-    if norm in {"1", "2", "3", "4", "5"}:
-        if stage == "current_member_menu" or last_menu == "current_member_menu":
-            reply = handle_current_member_choice(chat_id, text)
-            return finish_reply(chat_id, text, reply)
-
-        if stage == "general_enquiry_menu" or last_menu == "general_enquiry_menu":
-            reply = handle_general_enquiry_choice(chat_id, text)
-            return finish_reply(chat_id, text, reply)
-
-        if stage == "main_menu" or last_menu == "main_menu":
-            reply = handle_main_menu_choice(chat_id, text)
-            return finish_reply(chat_id, text, reply)
-
-        set_flow(chat_id, "main_menu")
-        remember_menu(chat_id, "main_menu")
-        reply = handle_main_menu_choice(chat_id, text)
-        return finish_reply(chat_id, text, reply)
 
     if stage == "pending_handoff_outlet":
         reply = handle_pending_handoff_outlet(chat_id, text)
+        return finish_reply(chat_id, text, reply)
+
+    if stage == "main_menu":
+        reply = handle_main_menu_choice(chat_id, text)
+
+        if reply:
+            return finish_reply(chat_id, text, reply)
+
+    if stage == "current_member_menu":
+        reply = handle_current_member_choice(chat_id, text)
+        return finish_reply(chat_id, text, reply)
+
+    if stage == "general_enquiry_menu":
+        reply = handle_general_enquiry_choice(chat_id, text)
         return finish_reply(chat_id, text, reply)
 
     if stage.startswith("trial_"):
@@ -2103,6 +1940,13 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     if stage.startswith("staff_"):
         reply = handle_staff_hub_flow(chat_id, text)
+
+        if reply:
+            return finish_reply(chat_id, text, reply)
+
+    if norm in {"1", "2", "3", "4", "5"}:
+        set_flow(chat_id, "main_menu")
+        reply = handle_main_menu_choice(chat_id, text)
 
         if reply:
             return finish_reply(chat_id, text, reply)
@@ -2141,7 +1985,7 @@ def process_message(chat_id: str, user_text: str) -> str:
             }
             set_flow(chat_id, "pending_handoff_outlet")
 
-            return finish_reply(chat_id, text, ask_outlet_before_handoff_text(chat_id, text))
+            return finish_reply(chat_id, text, ask_outlet_before_handoff_text())
 
         sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
 
@@ -2159,7 +2003,6 @@ def process_message(chat_id: str, user_text: str) -> str:
         return finish_reply(chat_id, text, reply)
 
     if any(word in norm for word in ["trial", "free trial", "triel", "trail lesson", "trial lesson"]):
-        clear_last_menu(chat_id)
         set_flow(chat_id, "trial_outlet")
 
         reply = (
@@ -2171,7 +2014,6 @@ def process_message(chat_id: str, user_text: str) -> str:
         return finish_reply(chat_id, text, reply)
 
     if "refer" in norm and "friend" in norm:
-        clear_last_menu(chat_id)
         set_flow(chat_id, "refer_friend_name")
 
         reply = "That’s wonderful — what is your friend’s full name?"
@@ -2179,7 +2021,6 @@ def process_message(chat_id: str, user_text: str) -> str:
         return finish_reply(chat_id, text, reply)
 
     if "corporate" in norm or "partnership" in norm or "partnerships" in norm:
-        clear_last_menu(chat_id)
         set_flow(chat_id, "corporate_name")
 
         reply = "Sure — may I have your full name?"
@@ -2187,7 +2028,6 @@ def process_message(chat_id: str, user_text: str) -> str:
         return finish_reply(chat_id, text, reply)
 
     if "staff hub" in norm:
-        clear_last_menu(chat_id)
         set_flow(chat_id, "staff_name")
 
         reply = "Staff Hub 🙏\n\nMay I have the staff name?"
@@ -2221,7 +2061,7 @@ def process_message(chat_id: str, user_text: str) -> str:
             }
             set_flow(chat_id, "pending_handoff_outlet")
 
-            return finish_reply(chat_id, text, ask_outlet_before_handoff_text(chat_id, text))
+            return finish_reply(chat_id, text, ask_outlet_before_handoff_text())
 
         sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
 
@@ -2269,6 +2109,7 @@ def health():
             "customer_service_telegram_configured": bool(CUSTOMER_SERVICE_TELEGRAM_CHAT_ID),
             "inactivity_checker_started": INACTIVITY_THREAD_STARTED,
             "active_inactivity_chats": len(INACTIVITY_STATE),
+            "schedule_file": SCHEDULE_FILE,
         }
     )
 
@@ -2299,7 +2140,7 @@ def debug_outlets():
 
 @app.route("/debug/schedule", methods=["GET"])
 def debug_schedule():
-    return jsonify(SCHEDULE_DATA)
+    return jsonify(load_schedule_data())
 
 
 @app.route("/debug/trial-bookings", methods=["GET"])
@@ -2398,11 +2239,6 @@ def telegram_webhook():
             pass
 
     return jsonify({"status": "ok"}), 200
-
-
-@app.route("/webhook", methods=["POST"])
-def webhook_alias():
-    return telegram_webhook()
 
 
 def build_bot_reply(chat_id: str, user_text: str) -> str:
