@@ -471,6 +471,103 @@ def get_flow_stage(chat_id: str) -> str:
 def clear_flow(chat_id: str) -> None:
     FLOW_STATE.pop(chat_id, None)
 
+def repeat_current_flow_question(chat_id: str) -> str:
+    stage = get_flow_stage(chat_id)
+    flow = get_flow(chat_id)
+
+    if stage == "main_menu":
+        return main_menu_text()
+
+    if stage == "current_member_menu":
+        return current_member_menu_text()
+
+    if stage == "general_enquiry_menu":
+        return general_enquiry_menu_text()
+
+    if stage == "trial_outlet":
+        return (
+            "Which studio would you prefer?\n\n"
+            f"{studio_options_text()}"
+        )
+
+    if stage == "trial_name":
+        return "May I have your full name?"
+
+    if stage == "trial_goal":
+        name = flow.get("name", "")
+
+        if name:
+            return f"Thanks, {name.title()} — what’s your fitness goal for the trial?"
+
+        return "What’s your fitness goal for the trial?"
+
+    if stage == "refer_friend_name":
+        return "That’s wonderful — what is your friend’s full name?"
+
+    if stage == "refer_friend_contact":
+        return "Thanks — what is your friend’s contact number?"
+
+    if stage == "refer_friend_studio":
+        return (
+            "Which studio would your friend prefer?\n\n"
+            f"{studio_options_text()}"
+        )
+
+    if stage == "corporate_name":
+        return "Sure — may I have your full name?"
+
+    if stage == "corporate_email":
+        return "Thanks. What is your email address?"
+
+    if stage == "corporate_message":
+        return (
+            "Thank you. Please briefly tell us what your Corporate / Partnership enquiry is about.\n\n"
+            "For example:\n"
+            "- corporate wellness programme\n"
+            "- company yoga class\n"
+            "- partnership proposal\n"
+            "- event collaboration"
+        )
+
+    if stage == "staff_name":
+        return "Staff Hub 🙏\n\nMay I have the staff name?"
+
+    if stage == "staff_studio":
+        return (
+            "Which studio is this related to?\n\n"
+            f"{studio_options_text()}"
+        )
+
+    if stage == "staff_room":
+        return "Which room is this related to?"
+
+    if stage == "staff_member_booking_details":
+        return (
+            "Please share the member and booking details.\n\n"
+            "For example:\n"
+            "- Member name\n"
+            "- Booking date and time\n"
+            "- Class name\n"
+            "- Issue or request"
+        )
+
+    if stage == "schedule_outlet":
+        return (
+            "Please choose an outlet by number or name:\n\n"
+            f"{studio_options_text()}"
+        )
+
+    if stage == "contact_outlet":
+        return (
+            "Please choose an outlet by number or name:\n\n"
+            f"{studio_options_text()}"
+        )
+
+    if stage == "pending_handoff_outlet":
+        return ask_outlet_before_handoff_text()
+
+    return main_menu_text()    
+
 
 def add_menu_hint(reply: str) -> str:
     if "Reply MENU to return to the main menu." in reply:
@@ -599,6 +696,65 @@ def is_outlet_contact_request(text: str) -> bool:
 # =========================
 # LANGUAGE
 # =========================
+def detect_language_switch_request(text: str) -> str:
+    t = normalize(text)
+    clean = simple_text(text)
+
+    english_phrases = {
+        "english",
+        "eng",
+        "speak english",
+        "reply english",
+        "reply in english",
+        "use english",
+        "change to english",
+        "can you speak english",
+        "english please",
+    }
+
+    chinese_phrases = {
+        "chinese",
+        "中文",
+        "华文",
+        "speak chinese",
+        "reply chinese",
+        "reply in chinese",
+        "use chinese",
+        "change to chinese",
+        "chinese please",
+    }
+
+    malay_phrases = {
+        "malay",
+        "bahasa melayu",
+        "reply malay",
+        "reply in malay",
+        "use malay",
+        "malay please",
+    }
+
+    tamil_phrases = {
+        "tamil",
+        "தமிழ்",
+        "reply tamil",
+        "reply in tamil",
+        "use tamil",
+        "tamil please",
+    }
+
+    if t in english_phrases or clean in english_phrases:
+        return "English"
+
+    if t in chinese_phrases or clean in chinese_phrases or text.strip() in chinese_phrases:
+        return "Chinese"
+
+    if t in malay_phrases or clean in malay_phrases:
+        return "Malay"
+
+    if t in tamil_phrases or clean in tamil_phrases or text.strip() in tamil_phrases:
+        return "Tamil"
+
+    return ""
 
 def detect_user_language(chat_id: str, user_text: str) -> str:
     text = normalize(user_text)
@@ -1940,6 +2096,19 @@ def process_message(chat_id: str, user_text: str) -> str:
         return "You have opted out. Reply START if you want to chat with Jal Yoga again."
 
     mark_chat_active(chat_id)
+
+    language_switch = detect_language_switch_request(text)
+
+    if language_switch:
+        USER_LANGUAGE[chat_id] = language_switch
+
+        reply = (
+            f"Okay, I’ll reply in {language_switch} from now on. 🙏\n\n"
+            f"{repeat_current_flow_question(chat_id)}"
+        )
+
+        return finish_reply(chat_id, text, reply)
+
     detect_user_language(chat_id, text)
 
     if contains_sensitive_keyword(text):
