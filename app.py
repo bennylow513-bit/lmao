@@ -471,7 +471,26 @@ def is_reset_request(text: str) -> bool:
 
 def contains_sensitive_keyword(text: str) -> bool:
     t = normalize(text)
-    return any(keyword in t for keyword in SENSITIVE_KEYWORDS)
+    
+def is_meaning_question(text: str) -> bool:
+    t = normalize(text)
+    raw = (text or "").strip()
+
+    phrases = [
+        "what mean",
+        "what does this mean",
+        "what does it mean",
+        "what do you mean",
+        "meaning",
+        "什么意思",
+        "什麼意思",
+        "什么 意思",
+        "apa maksud",
+        "maksudnya",
+        "maksud",
+    ]
+
+    return any(phrase in t or phrase in raw for phrase in phrases)    
 
 
 def is_class_cancellation_request(text: str) -> bool:
@@ -572,6 +591,16 @@ def detect_user_language(chat_id: str, user_text: str) -> str:
     if any(word in user_text for word in ["வணக்கம்"]):
         USER_LANGUAGE[chat_id] = "Tamil"
         return "Tamil"
+
+    # Do not change language just because user typed an outlet name.
+    # Example: "katong" should not make the bot reply in Malay.
+    if detect_outlet_from_text(user_text):
+        return USER_LANGUAGE.get(chat_id, "English")
+
+    # Do not change language for likely names.
+    # Example: "Ben Tan", "Jayden", "Amanda Lee"
+    if re.fullmatch(r"[A-Za-z][A-Za-z\s.'-]{1,60}", user_text.strip()) and len(user_text.strip().split()) <= 4:
+        return USER_LANGUAGE.get(chat_id, "English")
 
     if len(text) <= 2:
         return USER_LANGUAGE.get(chat_id, "English")
@@ -1799,16 +1828,22 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
             "Got it. May I have your full name?",
         )
 
-    if stage == "trial_name":
-        name = text.strip()
+        if stage == "trial_name":
+            if is_meaning_question(text):
+                return (
+                    "I mean: please type your full name for the trial booking.\n\n"
+                    "For example: Ben Tan"
+                )
 
-        if len(name) < 2:
-            return knowledge_reply(
-                chat_id,
-                text,
-                "Ask the customer to provide their full name for the trial booking.",
-                "Please share your full name.",
-            )
+            name = text.strip()
+
+            if len(name) < 2:
+                return knowledge_reply(
+                    chat_id,
+                    text,
+                    "Ask the customer to provide their full name for the trial booking.",
+                    "Please share your full name.",
+                )
 
         set_flow(
             chat_id,
@@ -1824,10 +1859,21 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
             f"Thanks, {name.title()} — what’s your fitness goal for the trial?",
         )
 
-    if stage == "trial_goal":
-        outlet = flow.get("outlet", "")
-        name = flow.get("name", "")
-        goal = text.strip()
+        if stage == "trial_goal":
+            if is_meaning_question(text):
+                return (
+                    "Fitness goal means what you want to improve from the trial class.\n\n"
+                    "For example:\n"
+                    "- flexibility\n"
+                    "- weight loss\n"
+                    "- strength\n"
+                    "- back pain relief\n"
+                    "- stress relief"
+                )
+
+            outlet = flow.get("outlet", "")
+            name = flow.get("name", "")
+            goal = text.strip()
 
         clear_flow(chat_id)
 
