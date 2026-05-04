@@ -1,0 +1,120 @@
+{
+  "updated": "2026-05-04",
+  "studios": {
+    "Alexandra": [
+      {
+        "day": "Monday",
+        "time": "7:00 PM",
+        "class": "Yoga",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Wednesday",
+        "time": "6:00 PM",
+        "class": "Pilates",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Saturday",
+        "time": "10:00 AM",
+        "class": "Trial Class",
+        "trainer": "TBC",
+        "slots": "TBC"
+      }
+    ],
+    "Katong": [
+      {
+        "day": "Tuesday",
+        "time": "7:30 PM",
+        "class": "Yoga",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Thursday",
+        "time": "6:30 PM",
+        "class": "Barre",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Sunday",
+        "time": "11:00 AM",
+        "class": "Trial Class",
+        "trainer": "TBC",
+        "slots": "TBC"
+      }
+    ],
+    "Kovan": [
+      {
+        "day": "Monday",
+        "time": "6:30 PM",
+        "class": "Pilates",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Friday",
+        "time": "7:00 PM",
+        "class": "Yoga",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Saturday",
+        "time": "9:00 AM",
+        "class": "Trial Class",
+        "trainer": "TBC",
+        "slots": "TBC"
+      }
+    ],
+    "Upper Bukit Timah": [
+      {
+        "day": "Tuesday",
+        "time": "6:00 PM",
+        "class": "Yoga",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Thursday",
+        "time": "7:30 PM",
+        "class": "Pilates",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Sunday",
+        "time": "10:30 AM",
+        "class": "Trial Class",
+        "trainer": "TBC",
+        "slots": "TBC"
+      }
+    ],
+    "Woodlands": [
+      {
+        "day": "Wednesday",
+        "time": "7:00 PM",
+        "class": "Barre",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Friday",
+        "time": "6:00 PM",
+        "class": "Yoga",
+        "trainer": "TBC",
+        "slots": "TBC"
+      },
+      {
+        "day": "Saturday",
+        "time": "11:30 AM",
+        "class": "Trial Class",
+        "trainer": "TBC",
+        "slots": "TBC"
+      }
+    ]
+  }
+}

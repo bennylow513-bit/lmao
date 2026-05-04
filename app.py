@@ -4,14 +4,14 @@ import re
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Dict, List
 from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request
 from openai import OpenAI
 
 load_dotenv()
@@ -34,13 +34,8 @@ CUSTOMER_SERVICE_TELEGRAM_CHAT_ID = os.getenv("CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
 
 PORT = int(os.getenv("PORT", "5000"))
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
-CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
-CUSTOMER_SERVICE_TELEGRAM_CHAT_ID = os.getenv("CUSTOMER_SERVICE_TELEGRAM_CHAT_ID", "")
+SCHEDULE_FILE = os.getenv("SCHEDULE_FILE", "schedule.json")
 
-PORT = int(os.getenv("PORT", "5000"))
-OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
-
-JAL_SCHEDULE_URL = "https://www.jalyoga.com.sg/jal-schedule/"
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 
@@ -144,13 +139,7 @@ def now_sg() -> str:
 
 
 def clean_number(number: str) -> str:
-    return (
-        str(number)
-        .replace("+", "")
-        .replace(" ", "")
-        .replace("-", "")
-        .strip()
-    )
+    return str(number).replace("+", "").replace(" ", "").replace("-", "").strip()
 
 
 def load_opt_out_users() -> set:
@@ -179,7 +168,6 @@ def load_knowledge_text() -> str:
     try:
         with open("knowledge.txt", "r", encoding="utf-8") as f:
             return f.read().strip()
-
     except FileNotFoundError:
         return ""
 
@@ -227,12 +215,7 @@ def parse_studios(text: str) -> List[Dict[str, str]]:
             continue
 
         if not any(s["name"].lower() == name.lower() for s in studios):
-            studios.append(
-                {
-                    "name": name,
-                    "address": address,
-                }
-            )
+            studios.append({"name": name, "address": address})
 
     return studios
 
@@ -290,6 +273,9 @@ def studio_aliases(studio_name: str) -> List[str]:
         if len(word) >= 4:
             aliases.add(word)
 
+    if studio_name.lower() == "upper bukit timah":
+        aliases.update({"bukit timah", "upper bt", "bt", "ubt"})
+
     return list(aliases)
 
 
@@ -340,7 +326,7 @@ def get_studio_address(outlet_name: str) -> str:
 
 
 # =========================
-# ENV KEYS
+# CONTACT CONFIG
 # =========================
 
 def env_key_for_outlet_whatsapp(outlet_name: str) -> str:
@@ -361,15 +347,6 @@ def outlet_telegram_chat_id(outlet_name: str) -> str:
     return os.getenv(env_key_for_outlet_telegram_chat(outlet_name), "")
 
 
-def customer_service_link() -> str:
-    number = clean_number(CUSTOMER_SERVICE_WHATSAPP_NUMBER)
-
-    if not number or number.upper() == "TBC":
-        return ""
-
-    return f"https://wa.me/{number}"
-
-
 def build_outlet_contact_reply(outlet: str) -> str:
     number = outlet_whatsapp_number(outlet)
 
@@ -379,14 +356,16 @@ def build_outlet_contact_reply(outlet: str) -> str:
     clean = clean_number(number)
 
     if not clean or clean.upper() == "TBC":
-        return ""
+        return (
+            f"{outlet} outlet contact is not configured yet.\n\n"
+            f"Address:\n{get_studio_address(outlet)}"
+        )
 
     return (
         f"{outlet} outlet contact:\n"
         f"+{clean}\n"
         f"https://wa.me/{clean}\n\n"
-        f"Address:\n"
-        f"{get_studio_address(outlet)}"
+        f"Address:\n{get_studio_address(outlet)}"
     )
 
 
@@ -454,6 +433,22 @@ def clear_flow(chat_id: str) -> None:
     FLOW_STATE.pop(chat_id, None)
 
 
+def add_menu_hint(reply: str) -> str:
+    if "Reply MENU to return to the main menu." in reply:
+        return reply
+
+    return reply.rstrip() + "\n\nReply MENU to return to the main menu."
+
+
+def finish_reply(chat_id: str, user_text: str, reply: str, add_menu: bool = True) -> str:
+    final_reply = add_menu_hint(reply) if add_menu else reply
+
+    add_history(chat_id, "user", user_text)
+    add_history(chat_id, "assistant", final_reply)
+
+    return final_reply
+
+
 # =========================
 # SAFETY / INTENT HELPERS
 # =========================
@@ -477,7 +472,9 @@ def is_reset_request(text: str) -> bool:
 
 def contains_sensitive_keyword(text: str) -> bool:
     t = normalize(text)
-    
+    return any(keyword in t for keyword in SENSITIVE_KEYWORDS)
+
+
 def is_meaning_question(text: str) -> bool:
     t = normalize(text)
     raw = (text or "").strip()
@@ -496,7 +493,7 @@ def is_meaning_question(text: str) -> bool:
         "maksud",
     ]
 
-    return any(phrase in t or phrase in raw for phrase in phrases)    
+    return any(phrase in t or phrase in raw for phrase in phrases)
 
 
 def is_class_cancellation_request(text: str) -> bool:
@@ -527,49 +524,37 @@ def is_class_cancellation_request(text: str) -> bool:
     return any(re.search(pattern, t, flags=re.IGNORECASE) for pattern in patterns)
 
 
-def class_cancellation_reply(chat_id: str, text: str) -> str:
-    reply = (
-        "Class Cancellation Policy 🙏\n\n"
-        "You can cancel a booked class without penalty up to 2 hours before the class starts.\n\n"
-        "After that:\n"
-        "- Cancellations made less than 2 hours before class are late cancellations\n"
-        "- No-shows are also counted as late cancellations\n"
-        "- After 3 late cancellations, booking access may be suspended for 7 calendar days\n\n"
-        "To cancel a specific booked class, please reply with:\n"
-        "- Outlet\n"
-        "- Class name\n"
-        "- Date and time"
-    )
+def is_customer_service_request(text: str) -> bool:
+    t = normalize(text)
 
-    add_history(chat_id, "user", text)
-    add_history(chat_id, "assistant", reply)
-
-    return reply
-
-
-def strip_handoff_token(text: str) -> str:
-    return text.replace("[HANDOFF]", "").strip()
-
-
-def add_customer_service_id_note(reply: str, chat_id: str) -> str:
-    triggers = [
-        "Trial Booking Summary:",
-        "Updated Trial Booking Summary:",
-        "Refer-a-Friend Summary:",
-        "Corporate / Partnership Summary:",
-        "Corporate/Partnership Summary:",
-        "Staff Hub Summary:",
+    phrases = [
+        "customer service",
+        "human",
+        "real person",
+        "staff",
+        "talk to someone",
+        "speak to someone",
+        "speak to team",
+        "contact support",
+        "support team",
     ]
 
-    if any(trigger in reply for trigger in triggers):
-        return (
-            f"{reply}\n\n"
-            "If you need any further assistance, please quote this Customer Service ID "
-            "so our team can find your request quickly:\n"
-            f"{chat_id}"
-        )
+    return any(phrase in t for phrase in phrases)
 
-    return reply
+
+def is_outlet_contact_request(text: str) -> bool:
+    t = normalize(text)
+
+    contact_words = [
+        "contact",
+        "phone",
+        "number",
+        "whatsapp",
+        "call",
+        "hotline",
+    ]
+
+    return any(word in t for word in contact_words)
 
 
 # =========================
@@ -598,13 +583,9 @@ def detect_user_language(chat_id: str, user_text: str) -> str:
         USER_LANGUAGE[chat_id] = "Tamil"
         return "Tamil"
 
-    # Do not change language just because user typed an outlet name.
-    # Example: "katong" should not make the bot reply in Malay.
     if detect_outlet_from_text(user_text):
         return USER_LANGUAGE.get(chat_id, "English")
 
-    # Do not change language for likely names.
-    # Example: "Ben Tan", "Jayden", "Amanda Lee"
     if re.fullmatch(r"[A-Za-z][A-Za-z\s.'-]{1,60}", user_text.strip()) and len(user_text.strip().split()) <= 4:
         return USER_LANGUAGE.get(chat_id, "English")
 
@@ -639,7 +620,7 @@ def detect_user_language(chat_id: str, user_text: str) -> str:
 
 
 # =========================
-# KNOWLEDGE REPLY
+# LLM REPLIES
 # =========================
 
 def knowledge_reply(chat_id: str, user_text: str, task: str, fallback: str = "") -> str:
@@ -667,7 +648,6 @@ Use ONLY:
 Language rule:
 - Customer language: {language}
 - Translate all customer-facing wording into the customer language where possible.
-- Do not copy the English menu wording just because the knowledge file or fallback text is written in English.
 - If the customer message is only a number, keep replying in the stored customer language.
 - Preserve outlet names, menu numbers, phone numbers, Telegram IDs, links, and formatting.
 - Do not add information that is not in the knowledge file.
@@ -712,109 +692,18 @@ Task:
     return fallback or "I’m sorry — I’m not fully sure based on the information I have.\n[HANDOFF]"
 
 
-def main_menu_text(chat_id: str, user_text: str) -> str:
-    fallback = (
-        "Namaste! Thank you for reaching out to Jal Yoga. 🙏\n\n"
-        "To help us handle your request as quickly as possible, please let us know what you're looking for today:\n\n"
-        "1. Schedule a Trial\n"
-        "2. I’m a current member\n"
-        "3. I’d like to find out more about Jal Yoga\n"
-        "4. Corporate/Partnerships\n"
-        "5. Staff Hub\n\n"
-        "You can also type CUSTOMER SERVICE anytime to speak to our team.\n"
-        "Reply STOP anytime to stop receiving follow-up messages."
-    )
-
-    return knowledge_reply(
-        chat_id,
-        user_text,
-        (
-            "Show the MAIN MENU from the knowledge file. "
-            "Keep the exact menu number structure. "
-            "The menu must include Schedule a Trial, current member, find out more about Jal Yoga, "
-            "Corporate/Partnerships, and Staff Hub."
-        ),
-        fallback,
-    )
-
-
-def current_member_menu_text(chat_id: str, user_text: str) -> str:
-    fallback = (
-        "Welcome back! Hope your practice is going well. 🙏\n\n"
-        "How can I help you with your membership today?\n\n"
-        "1. Class Cancellation\n"
-        "2. Membership Suspension\n"
-        "3. I need help with my class booking\n"
-        "4. I would like to refer a friend"
-    )
-
-    return knowledge_reply(
-        chat_id,
-        user_text,
-        (
-            "Show the CURRENT MEMBER menu from the knowledge file. "
-            "Keep the exact menu number structure. "
-            "The menu must include Class Cancellation, Membership Suspension, Class Booking Help, and Refer a Friend."
-        ),
-        fallback,
-    )
-
-
-def general_enquiry_menu_text(chat_id: str, user_text: str) -> str:
-    fallback = (
-        "General Enquiry 🙏\n\n"
-        "What would you like to know more about?\n\n"
-        "1. Studio Locations & Operating Hours\n"
-        "2. Class Types\n"
-        "3. Current Events & Retreat"
-    )
-
-    return knowledge_reply(
-        chat_id,
-        user_text,
-        (
-            "Show the GENERAL ENQUIRY menu from the knowledge file. "
-            "Keep the exact menu number structure. "
-            "The menu must include Studio Locations & Operating Hours, Class Types, and Current Events & Retreat."
-        ),
-        fallback,
-    )
-
-
-def ask_outlet_before_handoff_text(chat_id: str, user_text: str) -> str:
-    fallback = (
-        "Before I pass this to our Customer Service team, do you have a specific outlet for this enquiry?\n\n"
-        "Please reply with one of these:\n"
-        f"{studio_options_text(include_not_specified=True)}"
-    )
-
-    return knowledge_reply(
-        chat_id,
-        user_text,
-        (
-            "Ask the customer whether this Customer Service enquiry is about a specific outlet. "
-            "Show all studio options from the knowledge file and include Not specified."
-        ),
-        fallback,
-    )
-
-
-# =========================
-# LLM GENERAL ANSWER
-# =========================
-
 def ask_llm(chat_id: str, user_text: str) -> str:
-    language = detect_user_language(chat_id, user_text)
-
     if not client:
         return (
             "I’m sorry — the AI answer service is not configured yet.\n"
             "Please type CUSTOMER SERVICE and our team will follow up."
         )
 
+    language = detect_user_language(chat_id, user_text)
+
     history_text = "\n".join(
         f"{item['role'].upper()}: {item['content']}"
-        for item in CHAT_HISTORY.get(chat_id, [])
+        for item in CHAT_HISTORY.get(chat_id, [])[-12:]
     )
 
     instructions = f"""
@@ -881,124 +770,85 @@ Recent chat:
 
         answer = (response.output_text or "").strip()
 
+        if answer:
+            return answer
+
     except Exception as e:
         print("OPENAI ERROR:", str(e), flush=True)
         traceback.print_exc()
 
-        answer = "I’m sorry — something went wrong while checking the information.\n[HANDOFF]"
-
-    if not answer:
-        answer = "I’m sorry — I’m not fully sure based on the information I have.\n[HANDOFF]"
-
-    add_history(chat_id, "user", user_text)
-    add_history(chat_id, "assistant", strip_handoff_token(answer))
-
-    return answer
+    return "I’m sorry — I’m not fully sure based on the information I have.\n[HANDOFF]"
 
 
-# =========================
-# ROUTER
-# =========================
-
-def parse_json_reply(text: str) -> Dict:
-    try:
-        return json.loads(text)
-
-    except Exception:
-        pass
-
-    try:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-
-        if start >= 0 and end > start:
-            return json.loads(text[start:end])
-
-    except Exception:
-        pass
-
-    return {}
+def strip_handoff_token(text: str) -> str:
+    return text.replace("[HANDOFF]", "").strip()
 
 
-def route_message_with_llm(chat_id: str, user_text: str, mode: str = "normal") -> Dict:
-    outlet_guess = detect_outlet_from_text(user_text)
+def add_customer_service_id_note(reply: str, chat_id: str) -> str:
+    triggers = [
+        "Trial Booking Summary:",
+        "Updated Trial Booking Summary:",
+        "Refer-a-Friend Summary:",
+        "Corporate / Partnership Summary:",
+        "Corporate/Partnership Summary:",
+        "Staff Hub Summary:",
+    ]
 
-    default_result = {
-        "intent": "normal",
-        "outlet": outlet_guess,
-        "no_specific_outlet": False,
-        "confidence": "low",
-    }
-
-    if not client:
-        return default_result
-
-    history_text = "\n".join(
-        f"{item['role'].upper()}: {item['content']}"
-        for item in CHAT_HISTORY.get(chat_id, [])[-6:]
-    )
-
-    instructions = f"""
-You are a routing helper for a Jal Yoga Telegram bot.
-
-Return JSON only. No markdown. No explanation.
-
-Allowed outlets:
-{studio_options_text(include_not_specified=True)}
-
-Mode:
-{mode}
-
-Decide:
-1. intent:
-   - "outlet_contact" if user asks for outlet phone, WhatsApp, contact, number, call, hotline, or how to contact an outlet.
-   - "handoff_outlet_answer" if mode is "handoff_outlet_answer" and user is answering which outlet the issue is about.
-   - "normal" for everything else.
-
-2. outlet:
-   - Must be one of the allowed outlet names.
-   - Use "Not specified" only if user clearly says no specific outlet, any outlet, not sure, do not know, idk, or it does not matter.
-   - Use "" if unclear.
-
-3. no_specific_outlet:
-   - true only when user clearly says there is no specific outlet.
-   - false otherwise.
-
-4. confidence:
-   - "high", "medium", or "low".
-"""
-
-    try:
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            instructions=instructions,
-            input=f"Recent chat:\n{history_text}\n\nUser message:\n{user_text}",
+    if any(trigger in reply for trigger in triggers):
+        return (
+            f"{reply}\n\n"
+            "If you need further assistance, please quote this Customer Service ID:\n"
+            f"{chat_id}"
         )
 
-        data = parse_json_reply(response.output_text or "")
+    return reply
 
-    except Exception as e:
-        print("ROUTER ERROR:", str(e), flush=True)
-        return default_result
 
-    if not isinstance(data, dict):
-        return default_result
+# =========================
+# MENU TEXT
+# =========================
 
-    intent = data.get("intent", "normal")
-    outlet = data.get("outlet", "")
+def main_menu_text() -> str:
+    return (
+        "Namaste! Thank you for reaching out to Jal Yoga. 🙏\n\n"
+        "To help us handle your request as quickly as possible, please let us know what you're looking for today:\n\n"
+        "1. Schedule a Trial\n"
+        "2. I’m a current member\n"
+        "3. I’d like to find out more about Jal Yoga\n"
+        "4. Corporate/Partnerships\n"
+        "5. Staff Hub\n\n"
+        "You can also type CUSTOMER SERVICE anytime to speak to our team.\n"
+        "Reply STOP anytime to stop receiving follow-up messages."
+    )
 
-    if outlet not in studio_names() + ["Not specified", ""]:
-        outlet = outlet_guess
 
-    if intent not in {"outlet_contact", "handoff_outlet_answer", "normal"}:
-        intent = "normal"
+def current_member_menu_text() -> str:
+    return (
+        "Welcome back! Hope your practice is going well. 🙏\n\n"
+        "How can I help you with your membership today?\n\n"
+        "1. Class Cancellation\n"
+        "2. Membership Suspension\n"
+        "3. I need help with my class booking\n"
+        "4. I would like to refer a friend"
+    )
 
-    return {
-        "intent": intent,
-        "outlet": outlet,
-        "no_specific_outlet": bool(data.get("no_specific_outlet", False)),
-        "confidence": data.get("confidence", "low"),
-    }
+
+def general_enquiry_menu_text() -> str:
+    return (
+        "General Enquiry 🙏\n\n"
+        "What would you like to know more about?\n\n"
+        "1. Studio Locations & Operating Hours\n"
+        "2. Class Types\n"
+        "3. Current Events & Retreat"
+    )
+
+
+def ask_outlet_before_handoff_text() -> str:
+    return (
+        "Before I pass this to our Customer Service team, do you have a specific outlet for this enquiry?\n\n"
+        "Please reply with one of these:\n"
+        f"{studio_options_text(include_not_specified=True)}"
+    )
 
 
 # =========================
@@ -1016,7 +866,6 @@ def split_long_message(text: str, limit: int = 3900) -> List[str]:
         if len(current) + len(line) + 1 > limit:
             chunks.append(current)
             current = line
-
         else:
             current += "\n" + line if current else line
 
@@ -1056,24 +905,6 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
 # CUSTOMER SERVICE HANDOFF
 # =========================
 
-def replace_summary_outlet(summary_text: str, outlet: str) -> str:
-    lines = []
-    replaced = False
-
-    for line in summary_text.splitlines():
-        if line.strip().lower().startswith("- outlet:"):
-            lines.append(f"- Outlet: {outlet}")
-            replaced = True
-
-        else:
-            lines.append(line)
-
-    if not replaced:
-        lines.append(f"- Outlet: {outlet}")
-
-    return "\n".join(lines)
-
-
 def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answer: str, outlet: str) -> bool:
     target_chat_id = ""
 
@@ -1110,436 +941,286 @@ def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answe
 # TRIAL BOOKING
 # =========================
 
-def parse_trial_booking_summary(reply: str) -> Dict[str, str]:
-    booking = {
-        "outlet": "",
-        "name": "",
-        "fitness_goal": "",
-    }
-
-    if "Trial Booking Summary:" not in reply:
-        return booking
-
-    for line in reply.splitlines():
-        clean = line.strip()
-
-        if clean.lower().startswith("- outlet:"):
-            booking["outlet"] = clean.split(":", 1)[1].strip()
-
-        elif clean.lower().startswith("- name:"):
-            booking["name"] = clean.split(":", 1)[1].strip()
-
-        elif clean.lower().startswith("- fitness goal:"):
-            booking["fitness_goal"] = clean.split(":", 1)[1].strip()
-
-    return booking
-
-
-def send_trial_booking_to_outlet(customer_chat_id: str, reply: str) -> None:
-    if "Trial Booking Summary:" not in reply:
-        return
-
-    booking = parse_trial_booking_summary(reply)
-    outlet = booking.get("outlet", "") or detect_outlet_from_text(reply)
+def send_trial_booking_to_outlet(customer_chat_id: str, booking: Dict[str, str]) -> bool:
+    outlet = booking.get("outlet", "")
+    name = booking.get("name", "")
+    fitness_goal = booking.get("fitness_goal", "")
 
     if not outlet:
-        print("TRIAL BOOKING SEND SKIPPED: No outlet detected", flush=True)
-        return
+        return False
 
-    # IMPORTANT:
-    # Save the booking first, even if sending to Telegram fails.
-    # This allows the customer to change name/outlet/goal later.
     TRIAL_BOOKINGS[customer_chat_id] = {
         "outlet": outlet,
-        "name": booking.get("name", ""),
-        "fitness_goal": booking.get("fitness_goal", ""),
+        "name": name,
+        "fitness_goal": fitness_goal,
     }
 
     target_chat_id = outlet_telegram_chat_id(outlet)
-
-    if not target_chat_id:
-        print(
-            f"TRIAL BOOKING SEND SKIPPED: Missing Telegram chat ID for outlet={outlet}",
-            flush=True,
-        )
-
-        if CUSTOMER_SERVICE_TELEGRAM_CHAT_ID:
-            fallback_message = (
-                "New Trial Booking Received 🙏\n\n"
-                "⚠️ Outlet Telegram group is not configured, so this was sent to main Customer Service.\n\n"
-                f"Outlet: {outlet}\n"
-                "Class: Trial Class\n"
-                f"Name: {booking.get('name') or 'Not provided'}\n"
-                f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n\n"
-                f"Customer Telegram Chat ID: {customer_chat_id}"
-            )
-
-            try:
-                send_telegram_message(CUSTOMER_SERVICE_TELEGRAM_CHAT_ID, fallback_message)
-            except Exception as e:
-                print("TRIAL BOOKING FALLBACK SEND ERROR:", str(e), flush=True)
-                traceback.print_exc()
-
-        return
 
     message = (
         "New Trial Booking Received 🙏\n\n"
         f"Outlet: {outlet}\n"
         "Class: Trial Class\n"
-        f"Name: {booking.get('name') or 'Not provided'}\n"
-        f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n\n"
-        f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
-        "If you require further assistance, please use this ID when contacting Customer Service."
+        f"Name: {name or 'Not provided'}\n"
+        f"Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
+        f"Customer Telegram Chat ID: {customer_chat_id}"
     )
+
+    if not target_chat_id:
+        target_chat_id = CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
+        message = (
+            "New Trial Booking Received 🙏\n\n"
+            "⚠️ Outlet Telegram group is not configured, so this was sent to main Customer Service.\n\n"
+            f"Outlet: {outlet}\n"
+            "Class: Trial Class\n"
+            f"Name: {name or 'Not provided'}\n"
+            f"Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
+            f"Customer Telegram Chat ID: {customer_chat_id}"
+        )
+
+    if not target_chat_id:
+        print("TRIAL BOOKING SEND SKIPPED: No target chat ID", flush=True)
+        return False
 
     try:
         send_telegram_message(target_chat_id, message)
-
+        return True
     except Exception as e:
         print("TRIAL BOOKING SEND ERROR:", str(e), flush=True)
         traceback.print_exc()
-
-
-def send_trial_booking_update_to_outlet(customer_chat_id: str, booking: Dict[str, str], old_outlet: str = "") -> bool:
-    new_outlet = booking.get("outlet", "").strip()
-
-    if not new_outlet:
-        print("TRIAL BOOKING UPDATE SKIPPED: No new outlet selected", flush=True)
-        return False
-
-    # Send the updated booking to the NEW outlet the customer selected.
-    new_target_chat_id = outlet_telegram_chat_id(new_outlet)
-
-    update_message = (
-        "Updated Trial Booking Received 🔄\n\n"
-        f"New Outlet: {new_outlet}\n"
-        f"Previous Outlet: {old_outlet or 'Not specified'}\n"
-        "Class: Trial Class\n"
-        f"Name: {booking.get('name') or 'Not provided'}\n"
-        f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n\n"
-        f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
-        "Please follow up with this customer using the updated details."
-    )
-
-    if not new_target_chat_id:
-        print(
-            f"TRIAL BOOKING UPDATE SKIPPED: Missing Telegram chat ID for NEW outlet={new_outlet}",
-            flush=True,
-        )
-
-        # Fallback: send to main Customer Service if the new outlet group is not configured.
-        if CUSTOMER_SERVICE_TELEGRAM_CHAT_ID:
-            fallback_message = (
-                "Updated Trial Booking Received 🔄\n\n"
-                "⚠️ New outlet Telegram group is not configured, so this was sent to main Customer Service.\n\n"
-                f"New Outlet: {new_outlet}\n"
-                f"Previous Outlet: {old_outlet or 'Not specified'}\n"
-                "Class: Trial Class\n"
-                f"Name: {booking.get('name') or 'Not provided'}\n"
-                f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n\n"
-                f"Customer Telegram Chat ID: {customer_chat_id}"
-            )
-
-            try:
-                send_telegram_message(CUSTOMER_SERVICE_TELEGRAM_CHAT_ID, fallback_message)
-                return True
-            except Exception as e:
-                print("FALLBACK UPDATE SEND ERROR:", str(e), flush=True)
-                traceback.print_exc()
-
-        return False
-
-    try:
-        send_telegram_message(new_target_chat_id, update_message)
-
-        # If the old outlet is different, tell the old outlet not to follow up anymore.
-        if old_outlet and old_outlet != new_outlet:
-            old_target_chat_id = outlet_telegram_chat_id(old_outlet)
-
-            if old_target_chat_id:
-                old_message = (
-                    "Trial Booking Location Changed ⚠️\n\n"
-                    f"This customer changed their trial booking from {old_outlet} to {new_outlet}.\n\n"
-                    "Please do not follow up on the old outlet booking.\n\n"
-                    f"Name: {booking.get('name') or 'Not provided'}\n"
-                    f"Fitness Goal: {booking.get('fitness_goal') or 'Not provided'}\n"
-                    f"Customer Telegram Chat ID: {customer_chat_id}"
-                )
-
-                send_telegram_message(old_target_chat_id, old_message)
-
-        return True
-
-    except Exception as e:
-        print("TRIAL BOOKING UPDATE SEND ERROR:", str(e), flush=True)
-        traceback.print_exc()
         return False
 
 
 # =========================
-# REFER A FRIEND
+# REFER FRIEND
 # =========================
 
-def parse_refer_friend_summary(reply: str) -> Dict[str, str]:
-    referral = {
-        "friend_name": "",
-        "friend_contact": "",
-        "preferred_studio": "",
-    }
-
-    if "Refer-a-Friend Summary:" not in reply:
-        return referral
-
-    for line in reply.splitlines():
-        clean = line.strip()
-
-        if clean.lower().startswith("- friend name:"):
-            referral["friend_name"] = clean.split(":", 1)[1].strip()
-
-        elif clean.lower().startswith("- friend contact:"):
-            referral["friend_contact"] = clean.split(":", 1)[1].strip()
-
-        elif clean.lower().startswith("- preferred studio:"):
-            referral["preferred_studio"] = clean.split(":", 1)[1].strip()
-
-    return referral
-
-
-def send_refer_friend_to_outlet(customer_chat_id: str, reply: str) -> None:
-    if "Refer-a-Friend Summary:" not in reply:
-        return
-
-    referral = parse_refer_friend_summary(reply)
-    outlet = referral.get("preferred_studio", "") or detect_outlet_from_text(reply)
+def send_refer_friend_to_outlet(customer_chat_id: str, referral: Dict[str, str]) -> bool:
+    outlet = referral.get("preferred_studio", "")
+    friend_name = referral.get("friend_name", "")
+    friend_contact = referral.get("friend_contact", "")
 
     if not outlet:
-        print("REFER FRIEND SEND SKIPPED: No outlet detected", flush=True)
-        return
+        return False
 
     target_chat_id = outlet_telegram_chat_id(outlet)
 
     if not target_chat_id:
-        print(
-            f"REFER FRIEND SEND SKIPPED: Missing Telegram chat ID for outlet={outlet}",
-            flush=True,
-        )
-        return
+        target_chat_id = CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
+
+    if not target_chat_id:
+        print("REFER FRIEND SEND SKIPPED: No target chat ID", flush=True)
+        return False
 
     message = (
         "New Refer-a-Friend Received ✨\n\n"
         f"Preferred Studio: {outlet}\n"
-        f"Friend Name: {referral.get('friend_name') or 'Not provided'}\n"
-        f"Friend Contact: {referral.get('friend_contact') or 'Not provided'}\n\n"
-        f"Referrer Telegram Chat ID: {customer_chat_id}\n\n"
-        "If you require further assistance, please use this ID when contacting Customer Service."
+        f"Friend Name: {friend_name or 'Not provided'}\n"
+        f"Friend Contact: {friend_contact or 'Not provided'}\n\n"
+        f"Referrer Telegram Chat ID: {customer_chat_id}"
     )
 
     try:
         send_telegram_message(target_chat_id, message)
-
+        return True
     except Exception as e:
         print("REFER FRIEND SEND ERROR:", str(e), flush=True)
         traceback.print_exc()
+        return False
 
 
 # =========================
-# TRIAL UPDATE EXTRACT
+# LIVE SCHEDULE FROM JSON
 # =========================
 
-def extract_updated_name(text: str) -> str:
-    patterns = [
-        r"(?:change|chnage|update|switch)\s+my\s+name\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
-        r"(?:change|chnage|update|switch)\s+name\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
-        r"(?:name)\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
-    ]
+DEFAULT_SCHEDULE = {
+    "updated": "2026-05-04",
+    "studios": {
+        "Alexandra": [
+            {"day": "Monday", "time": "7:00 PM", "class": "Yoga", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Wednesday", "time": "6:00 PM", "class": "Pilates", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Saturday", "time": "10:00 AM", "class": "Trial Class", "trainer": "TBC", "slots": "TBC"},
+        ],
+        "Katong": [
+            {"day": "Tuesday", "time": "7:30 PM", "class": "Yoga", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Thursday", "time": "6:30 PM", "class": "Barre", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Sunday", "time": "11:00 AM", "class": "Trial Class", "trainer": "TBC", "slots": "TBC"},
+        ],
+        "Kovan": [
+            {"day": "Monday", "time": "6:30 PM", "class": "Pilates", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Friday", "time": "7:00 PM", "class": "Yoga", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Saturday", "time": "9:00 AM", "class": "Trial Class", "trainer": "TBC", "slots": "TBC"},
+        ],
+        "Upper Bukit Timah": [
+            {"day": "Tuesday", "time": "6:00 PM", "class": "Yoga", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Thursday", "time": "7:30 PM", "class": "Pilates", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Sunday", "time": "10:30 AM", "class": "Trial Class", "trainer": "TBC", "slots": "TBC"},
+        ],
+        "Woodlands": [
+            {"day": "Wednesday", "time": "7:00 PM", "class": "Barre", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Friday", "time": "6:00 PM", "class": "Yoga", "trainer": "TBC", "slots": "TBC"},
+            {"day": "Saturday", "time": "11:30 AM", "class": "Trial Class", "trainer": "TBC", "slots": "TBC"},
+        ],
+    },
+}
 
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
 
-        if match:
-            name = match.group(1).strip(" .,!?:;")
-            return " ".join(word.capitalize() for word in name.split())
-
-    return ""
-
-
-def extract_updated_fitness_goal(text: str) -> str:
-    patterns = [
-        r"(?:change|chnage|update|switch)\s+(?:my\s+)?(?:fitness\s+goal|goal)\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
-        r"(?:fitness\s+goal|goal)\s+(?:to|into)\s+(.+?)(?:\s+and\s+|$)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-
-        if match:
-            return match.group(1).strip(" .,!?:;")
-
-    return ""
-
-
-
-def extract_name_from_update_details(text: str, outlet: str) -> str:
-    """
-    Accepts any name when the user replies with update details, for example:
-    - Kelvin, Bukit Timah
-    - Ben Low, Kovan
-    - Sarah Tan, Woodlands
-    - Muhammad Amir, Katong
-    """
-
-    if not text:
-        return ""
-
-    # Split by comma, slash, semicolon, pipe, or the word "and"
-    parts = [
-        part.strip()
-        for part in re.split(r"[,;/|]+|\band\b", text, flags=re.IGNORECASE)
-        if part.strip()
-    ]
-
-    for part in parts:
-        # Skip the part that is clearly an outlet
-        if detect_outlet_from_text(part):
-            continue
-
-        cleaned = re.sub(
-            r"\b(change|update|switch|my|the|name|outlet|studio|location|to|into)\b",
-            " ",
-            part,
-            flags=re.IGNORECASE,
-        )
-
-        cleaned = re.sub(r"[^A-Za-z\s]", " ", cleaned)
-        cleaned = " ".join(cleaned.split()).strip()
-
-        if len(cleaned) >= 2:
-            return " ".join(word.capitalize() for word in cleaned.split())
-
-    # Fallback: remove outlet words from the full sentence
-    cleaned = text
-
-    if outlet:
-        for alias in studio_aliases(outlet):
-            cleaned = re.sub(
-                rf"\b{re.escape(alias)}\b",
-                " ",
-                cleaned,
-                flags=re.IGNORECASE,
-            )
-
-    cleaned = re.sub(
-        r"\b(change|update|switch|my|the|name|outlet|studio|location|to|into|and)\b",
-        " ",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-
-    cleaned = re.sub(r"[^A-Za-z\s]", " ", cleaned)
-    cleaned = " ".join(cleaned.split()).strip()
-
-    if len(cleaned) >= 2:
-        return " ".join(word.capitalize() for word in cleaned.split())
-
-    return ""
-
-def is_trial_update_request(text: str) -> bool:
+def is_schedule_request(text: str) -> bool:
     t = normalize(text)
 
-    phrases = [
-        "change my trial",
-        "update my trial",
-        "change trial",
-        "update trial",
-
-        "change my booking",
-        "update my booking",
-        "change booking",
-        "update booking",
-
-        "change my outlet",
-        "update my outlet",
-        "switch my outlet",
-        "move my outlet",
-        "change outlet",
-        "update outlet",
-        "switch outlet",
-        "move outlet",
-
-        "change my location",
-        "update my location",
-        "switch my location",
-        "move my location",
-        "change location",
-        "update location",
-        "switch location",
-        "move location",
-
-        "change my studio",
-        "update my studio",
-        "switch my studio",
-        "move my studio",
-        "change studio",
-        "update studio",
-        "switch studio",
-        "move studio",
-
-        "change my name",
-        "chnage my name",
-        "update my name",
-        "change name",
-        "update name",
-
-        "change my goal",
-        "update my goal",
-        "change goal",
-        "update goal",
-        "change my fitness goal",
-        "update my fitness goal",
-        "change fitness goal",
-        "update fitness goal",
-
-        "change my location and name",
-        "change my name and location",
-        "change my outlet and name",
-        "change my name and outlet",
-        "change my studio and name",
-        "change my name and studio",
-
-        "update my location and name",
-        "update my name and location",
-        "update my outlet and name",
-        "update my name and outlet",
-        "update my studio and name",
-        "update my name and studio",
-
-        "name and outlet",
-        "outlet and name",
-        "name and location",
-        "location and name",
-        "name and studio",
-        "studio and name",
-
-        "change to",
-        "move to",
-        "switch to",
-        "change everything",
-        "update everything",
+    keywords = [
+        "schedule",
+        "schdule",
+        "sched",
+        "timetable",
+        "time table",
+        "class timing",
+        "class timings",
+        "class time",
+        "class times",
+        "what class",
+        "classes today",
+        "today class",
+        "today schedule",
+        "tomorrow schedule",
+        "available class",
+        "available classes",
+        "slot",
+        "slots",
+        "jadual",
+        "时间表",
+        "課表",
+        "课程表",
     ]
 
-    if any(phrase in t for phrase in phrases):
-        return True
+    return any(keyword in t for keyword in keywords)
 
-    patterns = [
-        r"\b(change|chnage|update|switch|move)\b.*\b(location|outlet|studio|name|booking|trial|goal|fitness goal)\b",
-        r"\b(location|outlet|studio|name|booking|trial|goal|fitness goal)\b.*\b(change|chnage|update|switch|move)\b",
-        r"\b(name|location|outlet|studio)\b.*\band\b.*\b(name|location|outlet|studio)\b",
-        r"\bchange\s+to\b",
-        r"\bmove\s+to\b",
-        r"\bswitch\s+to\b",
+
+def load_schedule_data() -> dict:
+    try:
+        with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict) and data.get("studios"):
+            return data
+
+    except FileNotFoundError:
+        print("SCHEDULE FILE NOT FOUND. Using default schedule.", flush=True)
+
+    except Exception as e:
+        print("SCHEDULE LOAD ERROR:", str(e), flush=True)
+        traceback.print_exc()
+
+    return DEFAULT_SCHEDULE
+
+
+def requested_day_from_text(text: str) -> str:
+    t = normalize(text)
+    now = datetime.now(ZoneInfo("Asia/Singapore"))
+
+    if "today" in t:
+        return now.strftime("%A")
+
+    if "tomorrow" in t:
+        return (now + timedelta(days=1)).strftime("%A")
+
+    days = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
     ]
 
-    return any(re.search(pattern, t, flags=re.IGNORECASE) for pattern in patterns)
+    for day in days:
+        if day in t:
+            return day.title()
+
+    return ""
+
+
+def format_one_outlet_schedule(outlet: str, classes: list, day_filter: str = "") -> str:
+    address = get_studio_address(outlet)
+
+    lines = [f"{outlet} Schedule"]
+
+    if address:
+        lines.append(f"Address: {address}")
+
+    lines.append("")
+
+    if day_filter:
+        classes = [
+            item for item in classes
+            if str(item.get("day", "")).lower() == day_filter.lower()
+        ]
+
+    if not classes:
+        if day_filter:
+            lines.append(f"No classes are listed for {day_filter} right now.")
+        else:
+            lines.append("No classes are listed for this outlet right now.")
+
+        return "\n".join(lines)
+
+    for item in classes:
+        day = item.get("day", "TBC")
+        time_text = item.get("time", "TBC")
+        class_name = item.get("class", "TBC")
+        trainer = item.get("trainer", "TBC")
+        slots = str(item.get("slots", "TBC"))
+
+        line = f"- {day}, {time_text}: {class_name}"
+
+        if trainer and trainer != "TBC":
+            line += f" with {trainer}"
+
+        if slots and slots != "TBC":
+            line += f" ({slots} slots left)"
+
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def live_schedule_reply(chat_id: str, user_text: str) -> str:
+    schedule_data = load_schedule_data()
+    studios_data = schedule_data.get("studios", {})
+    updated = schedule_data.get("updated", "TBC")
+
+    requested_outlet = detect_outlet_from_text(user_text)
+    day_filter = requested_day_from_text(user_text)
+
+    if requested_outlet:
+        classes = studios_data.get(requested_outlet, [])
+
+        title_day = f" for {day_filter}" if day_filter else ""
+
+        return (
+            f"Here is the latest schedule I have for {requested_outlet}{title_day}. 🙏\n"
+            f"Last updated: {updated}\n\n"
+            f"{format_one_outlet_schedule(requested_outlet, classes, day_filter)}"
+        )
+
+    reply_lines = [
+        "Here is the latest Jal Yoga class schedule I have. 🙏",
+        f"Last updated: {updated}",
+        "",
+    ]
+
+    if day_filter:
+        reply_lines[0] = f"Here is the latest Jal Yoga class schedule I have for {day_filter}. 🙏"
+
+    for outlet in studio_names():
+        classes = studios_data.get(outlet, [])
+        reply_lines.append(format_one_outlet_schedule(outlet, classes, day_filter))
+        reply_lines.append("")
+
+    reply_lines.append("Please reply with an outlet name if you want to see only one outlet.")
+
+    return "\n".join(reply_lines).strip()
 
 
 # =========================
@@ -1591,6 +1272,7 @@ def inactivity_checker_loop() -> None:
 
                     reset_history(chat_id)
                     PENDING_HANDOFFS.pop(chat_id, None)
+                    TRIAL_BOOKINGS.pop(chat_id, None)
                     clear_flow(chat_id)
                     clear_inactivity_state(chat_id)
 
@@ -1625,58 +1307,27 @@ def handle_main_menu_choice(chat_id: str, text: str) -> str:
     if choice == "1":
         set_flow(chat_id, "trial_outlet")
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            (
-                "The customer selected Schedule a Trial. "
-                "Ask which studio they prefer. "
-                "Show the studio options from the knowledge file."
-            ),
-            (
-                "Sure — let’s schedule your trial class. 🙏\n\n"
-                "Which studio would you prefer?\n\n"
-                f"{studio_options_text()}"
-            ),
+        return (
+            "Sure — let’s schedule your trial class. 🙏\n\n"
+            "Which studio would you prefer?\n\n"
+            f"{studio_options_text()}"
         )
 
     if choice == "2":
         set_flow(chat_id, "current_member_menu")
-        return current_member_menu_text(chat_id, text)
+        return current_member_menu_text()
 
     if choice == "3":
         set_flow(chat_id, "general_enquiry_menu")
-        return general_enquiry_menu_text(chat_id, text)
+        return general_enquiry_menu_text()
 
     if choice == "4":
         set_flow(chat_id, "corporate_name")
-
-        return knowledge_reply(
-            chat_id,
-            text,
-            (
-                "The customer selected Corporate / Partnerships. "
-                "Start the Corporate / Partnership flow. "
-                "Ask for the customer's full name first. "
-                "Ask only one question."
-            ),
-            "Sure — may I have your full name?",
-        )
+        return "Sure — may I have your full name?"
 
     if choice == "5":
         set_flow(chat_id, "staff_name")
-
-        return knowledge_reply(
-            chat_id,
-            text,
-            (
-                "The customer selected Staff Hub. "
-                "Start the Staff Hub flow. "
-                "Ask for the staff name first. "
-                "Ask only one question."
-            ),
-            "Staff Hub 🙏\n\nMay I have the staff name?",
-        )
+        return "Staff Hub 🙏\n\nMay I have the staff name?"
 
     return ""
 
@@ -1687,67 +1338,45 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
     if choice == "1":
         clear_flow(chat_id)
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            (
-                "The customer selected Current Member > Class Cancellation. "
-                "Explain the Jal Yoga class cancellation policy from the knowledge file."
-            ),
-            (
-                "You can cancel a booked class without penalty up to 2 hours before the class starts.\n\n"
-                "After that:\n"
-                "- Cancellations made less than 2 hours before class are late cancellations\n"
-                "- No-shows are also counted as late cancellations\n"
-                "- After 3 late cancellations, booking access may be suspended for 7 calendar days"
-            ),
+        return (
+            "Class Cancellation Policy 🙏\n\n"
+            "You can cancel a booked class without penalty up to 2 hours before the class starts.\n\n"
+            "After that:\n"
+            "- Cancellations made less than 2 hours before class are late cancellations\n"
+            "- No-shows are also counted as late cancellations\n"
+            "- After 3 late cancellations, booking access may be suspended for 7 calendar days\n\n"
+            "To cancel a specific booked class, please reply with:\n"
+            "- Outlet\n"
+            "- Class name\n"
+            "- Date and time"
         )
 
     if choice == "2":
         clear_flow(chat_id)
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            (
-                "The customer selected Current Member > Membership Suspension. "
-                "Ask whether this is for Medical Suspension or Non-Medical / Travel Suspension."
-            ),
-            "Sure — is this for Medical Suspension or Non-Medical / Travel Suspension?",
+        return (
+            "Sure — is this for Medical Suspension or Non-Medical / Travel Suspension?\n\n"
+            "Medical Suspension usually requires a certified doctor’s memo.\n"
+            "Non-Medical / Travel Suspension may include a monthly extension fee."
         )
 
     if choice == "3":
         clear_flow(chat_id)
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            (
-                "The customer selected Current Member > Class Booking Help. "
-                "Ask what class booking issue they are facing. "
-                "Give examples such as cannot book a class, class is full, schedule issue, or app booking issue."
-            ),
-            (
-                "Sure — I can help with class booking questions.\n\n"
-                "Please tell me what issue you’re facing, for example:\n"
-                "- cannot book a class\n"
-                "- class is full\n"
-                "- need help checking a schedule\n"
-                "- app booking issue"
-            ),
+        return (
+            "Sure — I can help with class booking questions.\n\n"
+            "Please tell me what issue you’re facing, for example:\n"
+            "- cannot book a class\n"
+            "- class is full\n"
+            "- need help checking a schedule\n"
+            "- app booking issue"
         )
 
     if choice == "4":
         set_flow(chat_id, "refer_friend_name")
+        return "That’s wonderful — what is your friend’s full name?"
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            "The customer selected Refer a Friend. Ask for the friend's full name.",
-            "That’s wonderful — what is your friend’s full name?",
-        )
-
-    return ""
+    return current_member_menu_text()
 
 
 def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
@@ -1756,21 +1385,16 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
     if choice == "1":
         clear_flow(chat_id)
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            (
-                "The customer selected General Enquiry > Studio Locations & Operating Hours. "
-                "Provide Jal Yoga studio locations and operating hours from the knowledge file. "
-                "Organise it clearly by outlet. "
-                "If operating hours are not confirmed, say customers can contact Customer Service for the latest hours."
-            ),
-            (
-                "Studio Locations & Operating Hours 🙏\n\n"
-                f"{studio_options_text()}\n\n"
-                "For the latest operating hours, please contact Customer Service."
-            ),
-        )
+        lines = ["Studio Locations 🙏", ""]
+
+        for studio in STUDIOS:
+            lines.append(f"{studio['name']}")
+            lines.append(studio["address"])
+            lines.append("")
+
+        lines.append("For the latest operating hours, please contact Customer Service.")
+
+        return "\n".join(lines).strip()
 
     if choice == "2":
         clear_flow(chat_id)
@@ -1783,7 +1407,10 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
                 "Explain Jal Yoga class types from the knowledge file. "
                 "Keep it beginner-friendly and concise."
             ),
-            "Jal Yoga offers beginner-friendly yoga, Pilates, barre, and wellness classes. Please contact Customer Service for more details.",
+            (
+                "Jal Yoga offers beginner-friendly Yoga, Pilates, Barre, and wellness classes.\n\n"
+                "Please type your question and I’ll help based on the information I have."
+            ),
         )
 
     if choice == "3":
@@ -1800,11 +1427,11 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
             "For the latest events and retreats, please contact Customer Service.",
         )
 
-    return general_enquiry_menu_text(chat_id, text)
+    return general_enquiry_menu_text()
 
 
 # =========================
-# TRIAL / REFERRAL FLOW
+# FLOW HANDLERS
 # =========================
 
 def handle_trial_flow(chat_id: str, text: str) -> str:
@@ -1815,41 +1442,29 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
         outlet = detect_outlet_from_text(text)
 
         if not outlet:
-            return knowledge_reply(
-                chat_id,
-                text,
-                (
-                    "The customer is scheduling a trial but did not provide a valid studio. "
-                    "Ask them to choose a studio from the studio list."
-                ),
-                f"Which studio would you prefer?\n\n{studio_options_text()}",
+            return (
+                "Which studio would you prefer?\n\n"
+                f"{studio_options_text()}"
             )
 
         set_flow(chat_id, "trial_name", outlet=outlet)
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            "The customer selected a trial studio. Ask for their full name.",
-            "Got it. May I have your full name?",
+        return (
+            f"Got it — {outlet}. 🙏\n\n"
+            "May I have your full name?"
         )
 
-        if stage == "trial_name":
-            if is_meaning_question(text):
-                return (
-                    "I mean: please type your full name for the trial booking.\n\n"
-                    "For example: Ben Tan"
-                )
+    if stage == "trial_name":
+        if is_meaning_question(text):
+            return (
+                "I mean: please type your full name for the trial booking.\n\n"
+                "For example: Ben Tan"
+            )
 
-            name = text.strip()
+        name = text.strip()
 
-            if len(name) < 2:
-                return knowledge_reply(
-                    chat_id,
-                    text,
-                    "Ask the customer to provide their full name for the trial booking.",
-                    "Please share your full name.",
-                )
+        if len(name) < 2:
+            return "Please share your full name."
 
         set_flow(
             chat_id,
@@ -1858,30 +1473,36 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
             name=name,
         )
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            "The customer provided their name. Ask for their fitness goal for the trial.",
-            f"Thanks, {name.title()} — what’s your fitness goal for the trial?",
-        )
+        return f"Thanks, {name.title()} — what’s your fitness goal for the trial?"
 
-        if stage == "trial_goal":
-            if is_meaning_question(text):
-                return (
-                    "Fitness goal means what you want to improve from the trial class.\n\n"
-                    "For example:\n"
-                    "- flexibility\n"
-                    "- weight loss\n"
-                    "- strength\n"
-                    "- back pain relief\n"
-                    "- stress relief"
-                )
+    if stage == "trial_goal":
+        if is_meaning_question(text):
+            return (
+                "Fitness goal means what you want to improve from the trial class.\n\n"
+                "For example:\n"
+                "- flexibility\n"
+                "- weight loss\n"
+                "- strength\n"
+                "- back pain relief\n"
+                "- stress relief"
+            )
 
-            outlet = flow.get("outlet", "")
-            name = flow.get("name", "")
-            goal = text.strip()
+        outlet = flow.get("outlet", "")
+        name = flow.get("name", "")
+        goal = text.strip()
+
+        if len(goal) < 2:
+            return "Please share your fitness goal."
 
         clear_flow(chat_id)
+
+        booking = {
+            "outlet": outlet,
+            "name": name.title(),
+            "fitness_goal": goal,
+        }
+
+        send_trial_booking_to_outlet(chat_id, booking)
 
         reply = (
             "Trial Booking Summary:\n"
@@ -1893,93 +1514,9 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
             "Our Studio Manager will contact you within 24 hours to schedule your trial."
         )
 
-        send_trial_booking_to_outlet(chat_id, reply)
-
         return add_customer_service_id_note(reply, chat_id)
 
     return ""
-def llm_recommend_studio_from_area(chat_id: str, user_text: str, friend_name: str = "") -> Dict[str, str]:
-    """
-    Uses LLM to recommend the best Jal Yoga studio based on the user's area/location text.
-    It must only choose from the real studio list.
-    """
-
-    if not client:
-        return {
-            "outlet": "",
-            "reason": "",
-        }
-
-    studio_context = "\n".join(
-        f"- {studio['name']}: {studio['address']}"
-        for studio in STUDIOS
-    )
-
-    instructions = f"""
-You are a Jal Yoga Singapore studio recommendation helper.
-
-The customer may mention an area, MRT, neighbourhood, or location.
-Recommend the most suitable Jal Yoga studio from the allowed studio list.
-
-Allowed studios:
-{studio_context}
-
-Rules:
-- Return JSON only.
-- Do not use markdown.
-- The outlet must be exactly one of the allowed studio names.
-- If you cannot recommend confidently, return an empty outlet.
-- Do not invent new outlets.
-- Do not mention Customer Service.
-- Keep the reason short and customer-friendly.
-
-JSON format:
-{{
-  "outlet": "<exact studio name or empty string>",
-  "reason": "<short reason>"
-}}
-"""
-
-    try:
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            instructions=instructions,
-            input=(
-                f"Friend name: {friend_name}\n"
-                f"Customer message: {user_text}"
-            ),
-        )
-
-        data = parse_json_reply(response.output_text or "")
-
-        if not isinstance(data, dict):
-            return {
-                "outlet": "",
-                "reason": "",
-            }
-
-        outlet = data.get("outlet", "").strip()
-        reason = data.get("reason", "").strip()
-
-        if outlet not in studio_names():
-            return {
-                "outlet": "",
-                "reason": "",
-            }
-
-        return {
-            "outlet": outlet,
-            "reason": reason,
-        }
-
-    except Exception as e:
-        print("LLM STUDIO RECOMMEND ERROR:", str(e), flush=True)
-        traceback.print_exc()
-
-    return {
-        "outlet": "",
-        "reason": "",
-    }
 
 
 def handle_refer_friend_flow(chat_id: str, text: str) -> str:
@@ -1990,112 +1527,63 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
         friend_name = text.strip()
 
         if len(friend_name) < 2:
-            return knowledge_reply(
-                chat_id,
-                text,
-                "Ask for the friend's full name.",
-                "Please share your friend’s full name.",
-            )
+            return "Please share your friend’s full name."
 
         set_flow(chat_id, "refer_friend_contact", friend_name=friend_name)
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            "The customer provided their friend's name. Ask for the friend's contact number.",
-            "Thanks — what is your friend’s contact number?",
-        )
+        return "Thanks — what is your friend’s contact number?"
 
     if stage == "refer_friend_contact":
+        friend_contact = text.strip()
+
+        if len(friend_contact) < 3:
+            return "Please share your friend’s contact number."
+
         set_flow(
             chat_id,
             "refer_friend_studio",
             friend_name=flow.get("friend_name", ""),
-            friend_contact=text.strip(),
+            friend_contact=friend_contact,
         )
 
-        return knowledge_reply(
-            chat_id,
-            text,
-            "The customer provided the friend's contact. Ask which studio the friend would prefer.",
-            f"Which studio would your friend prefer?\n\n{studio_options_text()}",
+        return (
+            "Which studio would your friend prefer?\n\n"
+            f"{studio_options_text()}"
         )
 
-        if stage == "refer_friend_studio":
-            outlet = detect_outlet_from_text(text)
+    if stage == "refer_friend_studio":
+        outlet = detect_outlet_from_text(text)
 
-            if not outlet:
-                recommendation = llm_recommend_studio_from_area(
-                    chat_id,
-                    text,
-                    flow.get("friend_name", ""),
-                )
-
-                recommended_outlet = recommendation.get("outlet", "")
-                reason = recommendation.get("reason", "")
-
-                if recommended_outlet:
-                    set_flow(
-                        chat_id,
-                        "refer_friend_confirm_recommended_studio",
-                        friend_name=flow.get("friend_name", ""),
-                        friend_contact=flow.get("friend_contact", ""),
-                        recommended_outlet=recommended_outlet,
-                    )
-
-                reply = (
-                    f"I’d recommend {recommended_outlet}"
-                )
-
-                if reason:
-                    reply += f" because {reason}"
-
-                reply += (
-                    f".\n\nWould you like to choose {recommended_outlet} "
-                    f"for {flow.get('friend_name', 'your friend')}?"
-                )
-
-                return reply
-
+        if not outlet:
             return (
-                "Sorry, I could not find a matching studio for that location.\n\n"
-                "Please choose one of these studios:\n"
+                "Please choose one of these studios:\n\n"
                 f"{studio_options_text()}"
             )
 
-        reply = (
-            "Refer-a-Friend Summary:\n"
-            f"- Friend Name: {flow.get('friend_name', '')}\n"
-            f"- Friend Contact: {flow.get('friend_contact', '')}\n"
-            f"- Preferred Studio: {outlet}\n\n"
-            "That’s amazing! We love meeting friends of our Jal Yoga community. ✨\n\n"
-            "Thank you! Our team will reach out to them with a special invitation.\n\n"
-            "Don’t forget to ask them to mention your name when they sign up so we can look after both of you."
-        )
+        referral = {
+            "friend_name": flow.get("friend_name", ""),
+            "friend_contact": flow.get("friend_contact", ""),
+            "preferred_studio": outlet,
+        }
 
         clear_flow(chat_id)
 
-        send_refer_friend_to_outlet(chat_id, reply)
-
-        return add_customer_service_id_note(reply, chat_id)
+        send_refer_friend_to_outlet(chat_id, referral)
 
         reply = (
             "Refer-a-Friend Summary:\n"
-            f"- Friend Name: {flow.get('friend_name', '')}\n"
-            f"- Friend Contact: {flow.get('friend_contact', '')}\n"
+            f"- Friend Name: {referral['friend_name']}\n"
+            f"- Friend Contact: {referral['friend_contact']}\n"
             f"- Preferred Studio: {outlet}\n\n"
             "That’s amazing! We love meeting friends of our Jal Yoga community. ✨\n\n"
-            "Thank you! Our team will reach out to them with a special invitation.\n\n"
-            "Don’t forget to ask them to mention your name when they sign up so we can look after both of you."
+            "Thank you! Our team will reach out to them with a special invitation."
         )
-
-        clear_flow(chat_id)
-
-        send_refer_friend_to_outlet(chat_id, reply)
 
         return add_customer_service_id_note(reply, chat_id)
 
     return ""
+
+
 def handle_corporate_flow(chat_id: str, text: str) -> str:
     flow = get_flow(chat_id)
     stage = get_flow_stage(chat_id)
@@ -2169,6 +1657,8 @@ def handle_corporate_flow(chat_id: str, text: str) -> str:
         )
 
     return ""
+
+
 def handle_staff_hub_flow(chat_id: str, text: str) -> str:
     flow = get_flow(chat_id)
     stage = get_flow_stage(chat_id)
@@ -2265,185 +1755,86 @@ def handle_staff_hub_flow(chat_id: str, text: str) -> str:
         )
 
     return ""
-# =========================
-# LIVE JAL YOGA SCHEDULE
-# =========================
-
-SCHEDULE_CACHE = {
-    "updated_at": 0,
-    "text": "",
-}
-
-SCHEDULE_CACHE_SECONDS = 300  # 5 minutes
 
 
-def is_schedule_request(text: str) -> bool:
-    t = normalize(text)
+def handle_pending_handoff_outlet(chat_id: str, text: str) -> str:
+    norm = normalize(text)
 
-    keywords = [
-        "schedule",
-        "schdule",
-        "sched",
-        "timetable",
-        "time table",
-        "class timing",
-        "class timings",
-        "class time",
-        "class times",
-        "what class",
-        "classes today",
-        "today class",
-        "today schedule",
-        "tomorrow schedule",
-        "available class",
-        "available classes",
-        "slot",
-        "slots",
-        "jadual",
-        "时间表",
-        "課表",
-        "课程表",
-    ]
+    if norm in {"not specified", "no", "no specific outlet", "any", "any outlet", "not sure", "idk", "does not matter"}:
+        outlet = "Not specified"
+    else:
+        outlet = detect_outlet_from_text(text)
 
-    return any(keyword in t for keyword in keywords)
+    if not outlet:
+        return ask_outlet_before_handoff_text()
 
+    pending = PENDING_HANDOFFS.pop(chat_id, {})
+    clear_flow(chat_id)
 
-def fetch_jal_schedule_page_text() -> str:
-    """
-    Opens the Jal Yoga schedule page with a real browser so JavaScript-loaded
-    schedule content has a chance to appear.
-    """
-    now = time.time()
+    clean_answer = pending.get(
+        "clean_answer",
+        "I’ll pass this to our Customer Service team.",
+    )
 
-    if (
-        SCHEDULE_CACHE["text"]
-        and now - float(SCHEDULE_CACHE["updated_at"]) < SCHEDULE_CACHE_SECONDS
-    ):
-        return SCHEDULE_CACHE["text"]
+    if "- Outlet:" in clean_answer:
+        clean_answer = re.sub(r"- Outlet:.*", f"- Outlet: {outlet}", clean_answer)
+    else:
+        clean_answer += f"\n- Outlet: {outlet}"
 
-    try:
-        from playwright.sync_api import sync_playwright
+    sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
+    if sent:
+        if outlet != "Not specified":
+            return (
+                f"{clean_answer}\n\n"
+                f"I’ve sent this summary to our {outlet} Customer Service team on Telegram."
             )
 
-            page = browser.new_page(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            )
-
-            page.goto(JAL_SCHEDULE_URL, wait_until="networkidle", timeout=60000)
-
-            # Wait a bit more for schedule widgets/tabs to load
-            page.wait_for_timeout(5000)
-
-            # Try clicking outlet tabs/buttons so hidden schedule content can load
-            for outlet in studio_names():
-                try:
-                    page.get_by_text(outlet, exact=True).first.click(timeout=2000)
-                    page.wait_for_timeout(1500)
-                except Exception:
-                    pass
-
-            text = page.locator("body").inner_text(timeout=30000)
-
-            browser.close()
-
-        text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
-
-        SCHEDULE_CACHE["text"] = text
-        SCHEDULE_CACHE["updated_at"] = now
-
-        return text
-
-    except Exception as e:
-        print("JAL SCHEDULE SCRAPE ERROR:", str(e), flush=True)
-        traceback.print_exc()
-        return ""
-
-
-def format_schedule_with_llm(chat_id: str, user_text: str, schedule_text: str) -> str:
-    if not schedule_text:
         return (
-            "I’m sorry — I couldn’t load the live Jal Yoga schedule right now.\n\n"
-            "Please try again later, or type CUSTOMER SERVICE for help."
+            f"{clean_answer}\n\n"
+            "I’ve sent this summary to our Customer Service team on Telegram."
         )
+
+    return (
+        f"{clean_answer}\n\n"
+        "Customer Service Telegram group is not configured yet."
+    )
+
+
+# =========================
+# FINAL TRANSLATION LAYER
+# =========================
+
+def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
+    language = USER_LANGUAGE.get(chat_id, "English")
+
+    if language.lower() in {"english", "unknown"}:
+        return reply
 
     if not client:
-        return (
-            "I loaded the schedule page, but the AI formatting service is not configured.\n\n"
-            "Please type CUSTOMER SERVICE for help."
-        )
-
-    requested_outlet = detect_outlet_from_text(user_text)
-
-    outlet_instruction = ""
-    if requested_outlet:
-        outlet_instruction = f"The customer is asking about the {requested_outlet} outlet."
-
-    instructions = f"""
-You are Jal Yoga Singapore's Telegram customer-service assistant.
-
-The customer asked for the class schedule.
-
-Use ONLY the live schedule page text below.
-Do not give only the website link.
-Do not invent classes, dates, times, trainers, or slots.
-If the schedule page text does not contain actual class timings, say clearly:
-"I’m sorry — I can see the Jal Yoga schedule page, but I cannot read the live class timings from it right now."
-
-Customer request:
-{user_text}
-
-{outlet_instruction}
-
-Rules:
-- Reply with the schedule details directly in chat.
-- If the customer asks for one outlet, only show that outlet.
-- If the customer asks "today", show today only if the live text has today’s classes.
-- Keep it concise and easy to read.
-- Include class name, day/date, time, outlet, trainer, and slots only if available.
-- Do not mention Python, scraping, Playwright, Render, or internal code.
-"""
+        return reply
 
     try:
         response = client.responses.create(
             model=OPENAI_MODEL,
-            instructions=instructions,
-            input=(
-                "LIVE JAL YOGA SCHEDULE PAGE TEXT:\n"
-                f"{schedule_text[:25000]}"
+            instructions=(
+                f"Translate the assistant reply into {language}. "
+                "Preserve outlet names, menu numbers, phone numbers, Telegram IDs, URLs, emojis, and formatting. "
+                "Do not add new information."
             ),
+            input=reply,
         )
 
-        reply = (response.output_text or "").strip()
+        translated = (response.output_text or "").strip()
 
-        if reply:
-            return reply
+        if translated:
+            return translated
 
     except Exception as e:
-        print("SCHEDULE LLM FORMAT ERROR:", str(e), flush=True)
-        traceback.print_exc()
+        print("TRANSLATION ERROR:", str(e), flush=True)
 
-    return (
-        "I’m sorry — I couldn’t format the live schedule right now.\n\n"
-        "Please try again later, or type CUSTOMER SERVICE for help."
-    )
+    return reply
 
-
-def live_schedule_reply(chat_id: str, user_text: str) -> str:
-    schedule_text = fetch_jal_schedule_page_text()
-    return format_schedule_with_llm(chat_id, user_text, schedule_text)
 
 # =========================
 # PROCESS MESSAGE
@@ -2478,8 +1869,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         set_flow(chat_id, "main_menu")
         mark_chat_active(chat_id)
 
-        reply = main_menu_text(chat_id, text)
-        return reply + "\n\nReply MENU to return to the main menu."
+        return finish_reply(chat_id, text, main_menu_text())
 
     if chat_id in OPT_OUT_USERS:
         return "You have opted out. Reply START if you want to chat with Jal Yoga again."
@@ -2488,43 +1878,15 @@ def process_message(chat_id: str, user_text: str) -> str:
     detect_user_language(chat_id, text)
 
     if contains_sensitive_keyword(text):
-        return (
-            "For your safety, please do not share NRIC, passport numbers, full card numbers, "
-            "CVV, OTP, passwords, or bank details here.\n\n"
-            "For account-specific or payment-related help, please type CUSTOMER SERVICE."
+        return finish_reply(
+            chat_id,
+            text,
+            (
+                "For your safety, please do not share NRIC, passport numbers, full card numbers, "
+                "CVV, OTP, passwords, or bank details here.\n\n"
+                "For account-specific or payment-related help, please type CUSTOMER SERVICE."
+            ),
         )
-
-    if is_schedule_request(text):
-        reply = live_schedule_reply(chat_id, text)
-
-        add_history(chat_id, "user", text)
-        add_history(chat_id, "assistant", reply)
-
-        return reply + "\n\nReply MENU to return to the main menu."
-
-    if is_class_cancellation_request(text):
-        clear_flow(chat_id)
-
-        return (
-            class_cancellation_reply(chat_id, text)
-            + "\n\nReply MENU to return to the main menu."
-        )
-
-    # If the customer asks to change trial booking details but the server memory
-    # does not have the old booking, still start the update flow instead of handing off.
-    if is_trial_update_request(text) and chat_id not in TRIAL_BOOKINGS:
-        TRIAL_BOOKINGS[chat_id] = {
-            "outlet": "",
-            "name": "",
-            "fitness_goal": "",
-        }
-
-        set_flow(chat_id, "trial_update_details")
-
-        return (
-    "Sure — what would you like to update for your trial booking?\n\n"
-    "Reply MENU to return to the main menu."
-)
 
     if is_reset_request(text):
         reset_history(chat_id)
@@ -2532,279 +1894,159 @@ def process_message(chat_id: str, user_text: str) -> str:
         clear_flow(chat_id)
         set_flow(chat_id, "main_menu")
 
-        reply = main_menu_text(chat_id, text)
+        return finish_reply(chat_id, text, main_menu_text())
 
-        add_history(chat_id, "user", text)
-        add_history(chat_id, "assistant", reply)
-
-        return reply + "\n\nReply MENU to return to the main menu."
-
-    if "customer service" in norm or norm in {"cs", "agent", "human", "real person"}:
-        clean_answer = (
-            "I’ll pass this to our Customer Service team.\n\n"
-            "Summary:\n"
-            "- Topic: Customer Service enquiry\n"
-            "- Outlet: Not specified\n"
-            f"- Message: {text}"
-        )
-
-        PENDING_HANDOFFS[chat_id] = {
-            "user_message": text,
-            "clean_answer": clean_answer,
-        }
-
-        return ask_outlet_before_handoff_text(chat_id, text)
+    if is_schedule_request(text):
+        reply = live_schedule_reply(chat_id, text)
+        return finish_reply(chat_id, text, reply)
 
     stage = get_flow_stage(chat_id)
+
+    if stage == "pending_handoff_outlet":
+        reply = handle_pending_handoff_outlet(chat_id, text)
+        return finish_reply(chat_id, text, reply)
 
     if stage == "main_menu":
         reply = handle_main_menu_choice(chat_id, text)
 
         if reply:
-            add_history(chat_id, "user", text)
-            add_history(chat_id, "assistant", reply)
-
-            return reply + "\n\nReply MENU to return to the main menu."
+            return finish_reply(chat_id, text, reply)
 
     if stage == "current_member_menu":
         reply = handle_current_member_choice(chat_id, text)
-
-        if reply:
-            add_history(chat_id, "user", text)
-            add_history(chat_id, "assistant", reply)
-
-            return reply + "\n\nReply MENU to return to the main menu."
+        return finish_reply(chat_id, text, reply)
 
     if stage == "general_enquiry_menu":
         reply = handle_general_enquiry_choice(chat_id, text)
-
-        add_history(chat_id, "user", text)
-        add_history(chat_id, "assistant", reply)
-
-        return reply + "\n\nReply MENU to return to the main menu."
+        return finish_reply(chat_id, text, reply)
 
     if stage.startswith("trial_"):
         reply = handle_trial_flow(chat_id, text)
 
         if reply:
-            add_history(chat_id, "user", text)
-            add_history(chat_id, "assistant", reply)
-
-            return reply + "\n\nReply MENU to return to the main menu."
+            return finish_reply(chat_id, text, reply)
 
     if stage.startswith("refer_friend_"):
         reply = handle_refer_friend_flow(chat_id, text)
 
         if reply:
-            add_history(chat_id, "user", text)
-            add_history(chat_id, "assistant", reply)
+            return finish_reply(chat_id, text, reply)
 
-            return reply + "\n\nReply MENU to return to the main menu."
     if stage.startswith("corporate_"):
         reply = handle_corporate_flow(chat_id, text)
 
         if reply:
-            add_history(chat_id, "user", text)
-            add_history(chat_id, "assistant", reply)
+            return finish_reply(chat_id, text, reply)
 
-            return reply + "\n\nReply MENU to return to the main menu."    
-        
     if stage.startswith("staff_"):
         reply = handle_staff_hub_flow(chat_id, text)
 
         if reply:
-            add_history(chat_id, "user", text)
-            add_history(chat_id, "assistant", reply)
+            return finish_reply(chat_id, text, reply)
 
-            return reply + "\n\nReply MENU to return to the main menu."    
-            
+    if norm in {"1", "2", "3", "4", "5"}:
+        set_flow(chat_id, "main_menu")
+        reply = handle_main_menu_choice(chat_id, text)
 
-    new_outlet = detect_outlet_from_text(text)
-    new_name = extract_updated_name(text)
-    new_goal = extract_updated_fitness_goal(text)
+        if reply:
+            return finish_reply(chat_id, text, reply)
 
-    if get_flow_stage(chat_id) == "trial_update_name":
-        new_name = text.strip().title()
-
-    if get_flow_stage(chat_id) == "trial_update_goal":
-        new_goal = text.strip()
-
-    # If user first says "change name and outlet",
-    # then replies "Ben Low, Bukit Timah",
-    # this extracts "Ben Low" as the new name.
-    if not new_name and get_flow_stage(chat_id) == "trial_update_details":
-        new_name = extract_name_from_update_details(text, new_outlet)
-
-    wants_trial_update = (
-        chat_id in TRIAL_BOOKINGS
-        and (
-            is_trial_update_request(text)
-            or bool(new_name)
-            or bool(new_goal)
-            or get_flow_stage(chat_id) == "trial_update_details"
-        )
-    )
-
-    if wants_trial_update:
-        old = TRIAL_BOOKINGS[chat_id]
-
-        updated = {
-            "outlet": new_outlet or old.get("outlet", ""),
-            "name": new_name or old.get("name", ""),
-            "fitness_goal": new_goal or old.get("fitness_goal", ""),
-        }
-
-        nothing_changed = (
-            updated["outlet"] == old.get("outlet", "")
-            and updated["name"] == old.get("name", "")
-            and updated["fitness_goal"] == old.get("fitness_goal", "")
-        )
-
-        if nothing_changed:
-            set_flow(chat_id, "trial_update_details")
-
-            return knowledge_reply(
-                chat_id,
-                text,
-                (
-                    "The customer wants to update their trial booking but has not provided the new details clearly. "
-                    "Ask them for the new name, outlet, or fitness goal. "
-                    "Give examples using any customer name, such as: Sarah Tan, Bukit Timah."
-                ),
-                "Sure — what would you like to update for your trial booking?"
-            )
-
-        sent = send_trial_booking_update_to_outlet(
-            chat_id,
-            updated,
-            old_outlet=old.get("outlet", ""),
-        )
-
-        TRIAL_BOOKINGS[chat_id] = updated
-        clear_flow(chat_id)
-
+    if is_class_cancellation_request(text):
         reply = (
-            "No problem — I’ve updated your trial booking.\n\n"
-            "Updated Trial Booking Summary:\n"
-            f"- Outlet: {updated.get('outlet') or 'Not provided'}\n"
-            "- Class: Trial Class\n"
-            f"- Name: {updated.get('name') or 'Not provided'}\n"
-            f"- Fitness Goal: {updated.get('fitness_goal') or 'Not provided'}"
+            "Class Cancellation Policy 🙏\n\n"
+            "You can cancel a booked class without penalty up to 2 hours before the class starts.\n\n"
+            "After that:\n"
+            "- Cancellations made less than 2 hours before class are late cancellations\n"
+            "- No-shows are also counted as late cancellations\n"
+            "- After 3 late cancellations, booking access may be suspended for 7 calendar days\n\n"
+            "To cancel a specific booked class, please reply with:\n"
+            "- Outlet\n"
+            "- Class name\n"
+            "- Date and time"
         )
 
-        if sent:
-            reply += f"\n\nI’ve sent the updated summary to the {updated.get('outlet')} team."
-        else:
-            reply += "\n\nYour updated details have been saved in this chat."
+        return finish_reply(chat_id, text, reply)
 
-        return add_customer_service_id_note(reply, chat_id) + "\n\nReply MENU to return to the main menu."
+    if is_customer_service_request(text):
+        outlet = detect_outlet_from_text(text)
 
-        if sent:
-            reply += f"\n\nI’ve sent the updated summary to the {updated.get('outlet')} team."
-        else:
-            reply += "\n\nYour updated details have been saved in this chat."
+        clean_answer = (
+            "I’ll pass this to our Customer Service team.\n\n"
+            "Summary:\n"
+            "- Topic: Customer Service Request\n"
+            f"- Outlet: {outlet or 'Not specified'}\n"
+            f"- Message: {text}"
+        )
 
-        return add_customer_service_id_note(reply, chat_id) + "\n\nReply MENU to return to the main menu."
+        if not outlet:
+            PENDING_HANDOFFS[chat_id] = {
+                "user_message": text,
+                "clean_answer": clean_answer,
+            }
+            set_flow(chat_id, "pending_handoff_outlet")
 
-    if chat_id in PENDING_HANDOFFS:
-        pending = PENDING_HANDOFFS.pop(chat_id)
-
-        route = route_message_with_llm(chat_id, text, mode="handoff_outlet_answer")
-
-        selected = route.get("outlet", "")
-
-        if selected == "Not specified":
-            selected = ""
-
-        if not selected and not route.get("no_specific_outlet", False):
-            PENDING_HANDOFFS[chat_id] = pending
-
-            return knowledge_reply(
-                chat_id,
-                text,
-                (
-                    "The customer service handoff needs an outlet, but the user did not provide a clear outlet. "
-                    "Ask which outlet this is about and show the studio list including Not specified."
-                ),
-                (
-                    "Sorry, which outlet is this about?\n\n"
-                    "Please reply with one of these:\n"
-                    f"{studio_options_text(include_not_specified=True)}"
-                ),
-            )
-
-        outlet = selected if selected else "Not specified"
-
-        clean_answer = replace_summary_outlet(pending["clean_answer"], outlet)
+            return finish_reply(chat_id, text, ask_outlet_before_handoff_text())
 
         sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
 
-        team = f"{outlet} Customer Service team" if outlet != "Not specified" else "Customer Service team"
-
         if sent:
-            return (
+            reply = (
                 f"{clean_answer}\n\n"
-                f"I’ve sent this summary to our {team} on Telegram.\n\n"
-                "Reply MENU to return to the main menu."
+                f"I’ve sent this summary to our {outlet} Customer Service team on Telegram."
+            )
+        else:
+            reply = (
+                f"{clean_answer}\n\n"
+                "Customer Service Telegram group is not configured yet."
             )
 
-        return (
-            f"{clean_answer}\n\n"
-            "Customer Service Telegram group is not configured yet.\n\n"
-            "Reply MENU to return to the main menu."
-        )
+        return finish_reply(chat_id, text, reply)
 
     if any(word in norm for word in ["trial", "free trial", "triel", "trail lesson", "trial lesson"]):
         set_flow(chat_id, "trial_outlet")
 
-        reply = knowledge_reply(
-            chat_id,
-            text,
-            (
-                "The customer wants to schedule a trial class. "
-                "Ask which studio they prefer and show the studio options."
-            ),
-            (
-                "Sure — let’s schedule your trial class. 🙏\n\n"
-                "Which studio would you prefer?\n\n"
-                f"{studio_options_text()}"
-            ),
+        reply = (
+            "Sure — let’s schedule your trial class. 🙏\n\n"
+            "Which studio would you prefer?\n\n"
+            f"{studio_options_text()}"
         )
 
-        return reply + "\n\nReply MENU to return to the main menu."
+        return finish_reply(chat_id, text, reply)
 
     if "refer" in norm and "friend" in norm:
         set_flow(chat_id, "refer_friend_name")
 
-        reply = knowledge_reply(
-            chat_id,
-            text,
-            "The customer wants to refer a friend. Ask for the friend's full name.",
-            "That’s wonderful — what is your friend’s full name?",
+        reply = "That’s wonderful — what is your friend’s full name?"
+
+        return finish_reply(chat_id, text, reply)
+
+    if "corporate" in norm or "partnership" in norm or "partnerships" in norm:
+        set_flow(chat_id, "corporate_name")
+
+        reply = "Sure — may I have your full name?"
+
+        return finish_reply(chat_id, text, reply)
+
+    if "staff hub" in norm:
+        set_flow(chat_id, "staff_name")
+
+        reply = "Staff Hub 🙏\n\nMay I have the staff name?"
+
+        return finish_reply(chat_id, text, reply)
+
+    if is_outlet_contact_request(text):
+        outlet = detect_outlet_from_text(text)
+
+        if outlet:
+            reply = build_outlet_contact_reply(outlet)
+            return finish_reply(chat_id, text, reply)
+
+        reply = (
+            "Which outlet contact would you like?\n\n"
+            f"{studio_options_text()}"
         )
 
-        return reply + "\n\nReply MENU to return to the main menu."
-
-    route = route_message_with_llm(chat_id, text)
-
-    if route.get("intent") == "outlet_contact":
-        outlet = route.get("outlet", "")
-
-        if outlet and outlet != "Not specified":
-            reply = build_outlet_contact_reply(outlet)
-
-            if reply:
-                return reply + "\n\nReply MENU to return to the main menu."
-
-        return knowledge_reply(
-            chat_id,
-            text,
-            "Ask which outlet contact the customer wants. Show the studio options.",
-            (
-                "Which outlet contact would you like?\n\n"
-                f"{studio_options_text()}"
-            ),
-        ) + "\n\nReply MENU to return to the main menu."
+        return finish_reply(chat_id, text, reply)
 
     answer = ask_llm(chat_id, text)
 
@@ -2817,146 +2059,57 @@ def process_message(chat_id: str, user_text: str) -> str:
                 "user_message": text,
                 "clean_answer": clean_answer,
             }
+            set_flow(chat_id, "pending_handoff_outlet")
 
-            return ask_outlet_before_handoff_text(chat_id, text)
+            return finish_reply(chat_id, text, ask_outlet_before_handoff_text())
 
         sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
 
         if sent:
-            return (
+            reply = (
                 f"{clean_answer}\n\n"
-                f"I’ve sent this summary to our {outlet} Customer Service team on Telegram.\n\n"
-                "Reply MENU to return to the main menu."
+                f"I’ve sent this summary to our {outlet} Customer Service team on Telegram."
+            )
+        else:
+            reply = (
+                f"{clean_answer}\n\n"
+                "Customer Service Telegram group is not configured yet."
             )
 
-        return (
-            f"{clean_answer}\n\n"
-            "Customer Service Telegram group is not configured yet.\n\n"
-            "Reply MENU to return to the main menu."
-        )
+        return finish_reply(chat_id, text, reply)
 
-    final_reply = strip_handoff_token(answer)
+    final_reply = add_customer_service_id_note(strip_handoff_token(answer), chat_id)
 
-    send_trial_booking_to_outlet(chat_id, final_reply)
-    send_refer_friend_to_outlet(chat_id, final_reply)
-
-    return add_customer_service_id_note(final_reply, chat_id) + "\n\nReply MENU to return to the main menu."
-
+    return finish_reply(chat_id, text, final_reply)
 
 
 # =========================
-# FINAL TRANSLATION LAYER
+# FLASK ROUTES
 # =========================
-
-def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
-    """
-    Final safety layer to translate hardcoded/fallback replies.
-
-    This fixes cases where the user types Chinese/Portuguese/Malay/etc,
-    but the reply came from Python fallback text instead of the LLM.
-    """
-    language = detect_user_language(chat_id, user_text)
-
-    if not language or language.lower() == "english":
-        return reply
-
-    if not client:
-        return reply
-
-    try:
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            instructions=(
-                f"Translate this Jal Yoga bot reply into {language}. "
-                "Keep the meaning exactly the same. "
-                "Preserve menu numbers, outlet names, phone numbers, Telegram IDs, links, and formatting. "
-                "Do not add new information. "
-                "Do not remove MENU, STOP, Customer Service ID, [HANDOFF], or outlet names. "
-                "If the reply is already in the correct language, return it unchanged."
-            ),
-            input=reply,
-        )
-
-        translated = (response.output_text or "").strip()
-
-        if translated:
-            return translated
-
-    except Exception as e:
-        print("TRANSLATION ERROR:", str(e), flush=True)
-        traceback.print_exc()
-
-    return reply
-
-
-# =========================
-# ROUTES
-# =========================
-
-@app.before_request
-def start_background_tasks():
-    start_inactivity_checker()
-
 
 @app.route("/", methods=["GET"])
 def home():
-    telegram_link = "#"
-
-    if TELEGRAM_BOT_USERNAME:
-        telegram_link = f"https://t.me/{TELEGRAM_BOT_USERNAME.replace('@', '').strip()}"
-
-    try:
-        return render_template(
-            "index.html",
-            telegram_link=telegram_link,
-            whatsapp_link=customer_service_link() or "#",
-            studios=STUDIOS,
-        )
-
-    except Exception:
-        return (
-            "<h1>Jal Yoga Telegram Bot</h1>"
-            "<p>Server is running.</p>"
-            f'<p><a href="{telegram_link}">Open Telegram Bot</a></p>'
-        )
+    return jsonify(
+        {
+            "status": "ok",
+            "message": "Jal Yoga Telegram bot server is running.",
+            "telegram_webhook": "/telegram/webhook",
+            "health": "/health",
+        }
+    )
 
 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify(
         {
-            "status": "ok",
-            "message": "healthy",
+            "status": "healthy",
+            "openai_configured": bool(OPENAI_API_KEY),
+            "telegram_configured": bool(TELEGRAM_BOT_TOKEN),
+            "customer_service_telegram_configured": bool(CUSTOMER_SERVICE_TELEGRAM_CHAT_ID),
             "inactivity_checker_started": INACTIVITY_THREAD_STARTED,
             "active_inactivity_chats": len(INACTIVITY_STATE),
-            "warning_seconds": INACTIVITY_WARNING_SECONDS,
-            "close_seconds": INACTIVITY_CLOSE_SECONDS,
-            "check_seconds": INACTIVITY_CHECK_SECONDS,
-        }
-    )
-
-
-@app.route("/debug/inactivity", methods=["GET"])
-def debug_inactivity():
-    safe_state = {}
-
-    for chat_id, state in INACTIVITY_STATE.items():
-        safe_state[chat_id[-4:]] = {
-            "seconds_since_last_user_message": int(
-                time.time() - float(state.get("last_user_at", time.time()))
-            ),
-            "warning_sent": bool(state.get("warning_sent", False)),
-            "closed": bool(state.get("closed", False)),
-        }
-
-    return jsonify(
-        {
-            "checker_started": INACTIVITY_THREAD_STARTED,
-            "warning_seconds": INACTIVITY_WARNING_SECONDS,
-            "close_seconds": INACTIVITY_CLOSE_SECONDS,
-            "check_seconds": INACTIVITY_CHECK_SECONDS,
-            "active_chat_count": len(INACTIVITY_STATE),
-            "chats": safe_state,
+            "schedule_file": SCHEDULE_FILE,
         }
     )
 
@@ -2983,6 +2136,11 @@ def debug_outlets():
             "outlets": outlet_data,
         }
     )
+
+
+@app.route("/debug/schedule", methods=["GET"])
+def debug_schedule():
+    return jsonify(load_schedule_data())
 
 
 @app.route("/debug/trial-bookings", methods=["GET"])
@@ -3064,8 +2222,6 @@ def telegram_webhook():
 
     try:
         reply = process_message(chat_id, text)
-
-        # Final translation layer for hardcoded and fallback replies
         reply = translate_reply_if_needed(chat_id, text, reply)
 
         send_telegram_message(chat_id, reply)
@@ -3079,7 +2235,6 @@ def telegram_webhook():
                 chat_id,
                 "I’m sorry — something went wrong on our side. Please type CUSTOMER SERVICE.",
             )
-
         except Exception:
             pass
 
@@ -3087,12 +2242,13 @@ def telegram_webhook():
 
 
 def build_bot_reply(chat_id: str, user_text: str) -> str:
-    return process_message(chat_id, user_text)
+    reply = process_message(chat_id, user_text)
+    return translate_reply_if_needed(chat_id, user_text, reply)
 
+
+start_inactivity_checker()
 
 if __name__ == "__main__":
-    start_inactivity_checker()
-
     app.run(
         host="0.0.0.0",
         port=PORT,
