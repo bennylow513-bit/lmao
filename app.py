@@ -252,10 +252,13 @@ def studio_names() -> List[str]:
 
 
 def studio_options_text(include_not_specified: bool = False) -> str:
-    options = [f"- {name}" for name in studio_names()]
+    options = []
+
+    for index, name in enumerate(studio_names(), start=1):
+        options.append(f"{index}. {name}")
 
     if include_not_specified:
-        options.append("- Not specified")
+        options.append(f"{len(options) + 1}. Not specified")
 
     return "\n".join(options)
 
@@ -313,6 +316,42 @@ def detect_outlet_from_text(text: str) -> str:
 
     if best_score >= 0.78:
         return best_studio
+
+    return ""
+
+
+def detect_outlet_choice(text: str, include_not_specified: bool = False) -> str:
+    norm = normalize(text)
+    names = studio_names()
+
+    if norm.isdigit():
+        number = int(norm)
+
+        if 1 <= number <= len(names):
+            return names[number - 1]
+
+        if include_not_specified and number == len(names) + 1:
+            return "Not specified"
+
+    outlet = detect_outlet_from_text(text)
+
+    if outlet:
+        return outlet
+
+    if include_not_specified:
+        if norm in {
+            "not specified",
+            "no",
+            "no specific outlet",
+            "any",
+            "any outlet",
+            "not sure",
+            "idk",
+            "does not matter",
+            "doesn't matter",
+            "no outlet",
+        }:
+            return "Not specified"
 
     return ""
 
@@ -1185,12 +1224,12 @@ def format_one_outlet_schedule(outlet: str, classes: list, day_filter: str = "")
     return "\n".join(lines)
 
 
-def live_schedule_reply(chat_id: str, user_text: str) -> str:
+def live_schedule_reply(chat_id: str, user_text: str, forced_outlet: str = "") -> str:
     schedule_data = load_schedule_data()
     studios_data = schedule_data.get("studios", {})
     updated = schedule_data.get("updated", "TBC")
 
-    requested_outlet = detect_outlet_from_text(user_text)
+    requested_outlet = forced_outlet or detect_outlet_choice(user_text)
     day_filter = requested_day_from_text(user_text)
 
     if requested_outlet:
@@ -1218,7 +1257,8 @@ def live_schedule_reply(chat_id: str, user_text: str) -> str:
         reply_lines.append(format_one_outlet_schedule(outlet, classes, day_filter))
         reply_lines.append("")
 
-    reply_lines.append("Please reply with an outlet name if you want to see only one outlet.")
+    reply_lines.append("Please reply with an outlet number or outlet name if you want to see only one outlet:")
+    reply_lines.append(studio_options_text())
 
     return "\n".join(reply_lines).strip()
 
@@ -1387,8 +1427,8 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
 
         lines = ["Studio Locations 🙏", ""]
 
-        for studio in STUDIOS:
-            lines.append(f"{studio['name']}")
+        for index, studio in enumerate(STUDIOS, start=1):
+            lines.append(f"{index}. {studio['name']}")
             lines.append(studio["address"])
             lines.append("")
 
@@ -1431,6 +1471,36 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
 
 
 # =========================
+# EXTRA OUTLET FLOW HANDLERS
+# =========================
+
+def handle_schedule_outlet_flow(chat_id: str, text: str) -> str:
+    outlet = detect_outlet_choice(text)
+
+    if not outlet:
+        return (
+            "Please choose an outlet by number or name:\n\n"
+            f"{studio_options_text()}"
+        )
+
+    clear_flow(chat_id)
+    return live_schedule_reply(chat_id, text, forced_outlet=outlet)
+
+
+def handle_contact_outlet_flow(chat_id: str, text: str) -> str:
+    outlet = detect_outlet_choice(text)
+
+    if not outlet:
+        return (
+            "Please choose an outlet by number or name:\n\n"
+            f"{studio_options_text()}"
+        )
+
+    clear_flow(chat_id)
+    return build_outlet_contact_reply(outlet)
+
+
+# =========================
 # FLOW HANDLERS
 # =========================
 
@@ -1439,7 +1509,7 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
 
     if stage == "trial_outlet":
-        outlet = detect_outlet_from_text(text)
+        outlet = detect_outlet_choice(text)
 
         if not outlet:
             return (
@@ -1552,7 +1622,7 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
         )
 
     if stage == "refer_friend_studio":
-        outlet = detect_outlet_from_text(text)
+        outlet = detect_outlet_choice(text)
 
         if not outlet:
             return (
@@ -1677,7 +1747,7 @@ def handle_staff_hub_flow(chat_id: str, text: str) -> str:
         )
 
     if stage == "staff_studio":
-        outlet = detect_outlet_from_text(text)
+        outlet = detect_outlet_choice(text)
 
         if not outlet:
             return (
@@ -1758,12 +1828,7 @@ def handle_staff_hub_flow(chat_id: str, text: str) -> str:
 
 
 def handle_pending_handoff_outlet(chat_id: str, text: str) -> str:
-    norm = normalize(text)
-
-    if norm in {"not specified", "no", "no specific outlet", "any", "any outlet", "not sure", "idk", "does not matter"}:
-        outlet = "Not specified"
-    else:
-        outlet = detect_outlet_from_text(text)
+    outlet = detect_outlet_choice(text, include_not_specified=True)
 
     if not outlet:
         return ask_outlet_before_handoff_text()
@@ -1896,11 +1961,15 @@ def process_message(chat_id: str, user_text: str) -> str:
 
         return finish_reply(chat_id, text, main_menu_text())
 
-    if is_schedule_request(text):
-        reply = live_schedule_reply(chat_id, text)
+    stage = get_flow_stage(chat_id)
+
+    if stage == "schedule_outlet":
+        reply = handle_schedule_outlet_flow(chat_id, text)
         return finish_reply(chat_id, text, reply)
 
-    stage = get_flow_stage(chat_id)
+    if stage == "contact_outlet":
+        reply = handle_contact_outlet_flow(chat_id, text)
+        return finish_reply(chat_id, text, reply)
 
     if stage == "pending_handoff_outlet":
         reply = handle_pending_handoff_outlet(chat_id, text)
@@ -1944,6 +2013,17 @@ def process_message(chat_id: str, user_text: str) -> str:
         if reply:
             return finish_reply(chat_id, text, reply)
 
+    if is_schedule_request(text):
+        requested_outlet = detect_outlet_choice(text)
+
+        if requested_outlet:
+            reply = live_schedule_reply(chat_id, text, forced_outlet=requested_outlet)
+            return finish_reply(chat_id, text, reply)
+
+        set_flow(chat_id, "schedule_outlet")
+        reply = live_schedule_reply(chat_id, text)
+        return finish_reply(chat_id, text, reply)
+
     if norm in {"1", "2", "3", "4", "5"}:
         set_flow(chat_id, "main_menu")
         reply = handle_main_menu_choice(chat_id, text)
@@ -1968,7 +2048,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         return finish_reply(chat_id, text, reply)
 
     if is_customer_service_request(text):
-        outlet = detect_outlet_from_text(text)
+        outlet = detect_outlet_choice(text)
 
         clean_answer = (
             "I’ll pass this to our Customer Service team.\n\n"
@@ -2035,11 +2115,13 @@ def process_message(chat_id: str, user_text: str) -> str:
         return finish_reply(chat_id, text, reply)
 
     if is_outlet_contact_request(text):
-        outlet = detect_outlet_from_text(text)
+        outlet = detect_outlet_choice(text)
 
         if outlet:
             reply = build_outlet_contact_reply(outlet)
             return finish_reply(chat_id, text, reply)
+
+        set_flow(chat_id, "contact_outlet")
 
         reply = (
             "Which outlet contact would you like?\n\n"
@@ -2052,7 +2134,7 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     if "[HANDOFF]" in answer:
         clean_answer = strip_handoff_token(answer).strip()
-        outlet = detect_outlet_from_text(text + "\n" + clean_answer)
+        outlet = detect_outlet_choice(text + "\n" + clean_answer)
 
         if not outlet:
             PENDING_HANDOFFS[chat_id] = {
