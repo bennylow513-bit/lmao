@@ -1846,6 +1846,88 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
         return add_customer_service_id_note(reply, chat_id)
 
     return ""
+def llm_recommend_studio_from_area(chat_id: str, user_text: str, friend_name: str = "") -> Dict[str, str]:
+    """
+    Uses LLM to recommend the best Jal Yoga studio based on the user's area/location text.
+    It must only choose from the real studio list.
+    """
+
+    if not client:
+        return {
+            "outlet": "",
+            "reason": "",
+        }
+
+    studio_context = "\n".join(
+        f"- {studio['name']}: {studio['address']}"
+        for studio in STUDIOS
+    )
+
+    instructions = f"""
+You are a Jal Yoga Singapore studio recommendation helper.
+
+The customer may mention an area, MRT, neighbourhood, or location.
+Recommend the most suitable Jal Yoga studio from the allowed studio list.
+
+Allowed studios:
+{studio_context}
+
+Rules:
+- Return JSON only.
+- Do not use markdown.
+- The outlet must be exactly one of the allowed studio names.
+- If you cannot recommend confidently, return an empty outlet.
+- Do not invent new outlets.
+- Do not mention Customer Service.
+- Keep the reason short and customer-friendly.
+
+JSON format:
+{{
+  "outlet": "<exact studio name or empty string>",
+  "reason": "<short reason>"
+}}
+"""
+
+    try:
+        response = client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=instructions,
+            input=(
+                f"Friend name: {friend_name}\n"
+                f"Customer message: {user_text}"
+            ),
+        )
+
+        data = parse_json_reply(response.output_text or "")
+
+        if not isinstance(data, dict):
+            return {
+                "outlet": "",
+                "reason": "",
+            }
+
+        outlet = data.get("outlet", "").strip()
+        reason = data.get("reason", "").strip()
+
+        if outlet not in studio_names():
+            return {
+                "outlet": "",
+                "reason": "",
+            }
+
+        return {
+            "outlet": outlet,
+            "reason": reason,
+        }
+
+    except Exception as e:
+        print("LLM STUDIO RECOMMEND ERROR:", str(e), flush=True)
+        traceback.print_exc()
+
+    return {
+        "outlet": "",
+        "reason": "",
+    }
 
 
 def handle_refer_friend_flow(chat_id: str, text: str) -> str:
@@ -1887,16 +1969,63 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
             f"Which studio would your friend prefer?\n\n{studio_options_text()}",
         )
 
-    if stage == "refer_friend_studio":
-        outlet = detect_outlet_from_text(text)
+        if stage == "refer_friend_studio":
+            outlet = detect_outlet_from_text(text)
 
-        if not outlet:
-            return knowledge_reply(
-                chat_id,
-                text,
-                "The customer did not provide a valid preferred studio. Ask them to choose one studio.",
-                f"Please choose one preferred studio:\n\n{studio_options_text()}",
+            if not outlet:
+                recommendation = llm_recommend_studio_from_area(
+                    chat_id,
+                    text,
+                    flow.get("friend_name", ""),
+                )
+
+                recommended_outlet = recommendation.get("outlet", "")
+                reason = recommendation.get("reason", "")
+
+                if recommended_outlet:
+                    set_flow(
+                        chat_id,
+                        "refer_friend_confirm_recommended_studio",
+                        friend_name=flow.get("friend_name", ""),
+                        friend_contact=flow.get("friend_contact", ""),
+                        recommended_outlet=recommended_outlet,
+                    )
+
+                reply = (
+                    f"I’d recommend {recommended_outlet}"
+                )
+
+                if reason:
+                    reply += f" because {reason}"
+
+                reply += (
+                    f".\n\nWould you like to choose {recommended_outlet} "
+                    f"for {flow.get('friend_name', 'your friend')}?"
+                )
+
+                return reply
+
+            return (
+                "Sorry, I could not find a matching studio for that location.\n\n"
+                "Please choose one of these studios:\n"
+                f"{studio_options_text()}"
             )
+
+        reply = (
+            "Refer-a-Friend Summary:\n"
+            f"- Friend Name: {flow.get('friend_name', '')}\n"
+            f"- Friend Contact: {flow.get('friend_contact', '')}\n"
+            f"- Preferred Studio: {outlet}\n\n"
+            "That’s amazing! We love meeting friends of our Jal Yoga community. ✨\n\n"
+            "Thank you! Our team will reach out to them with a special invitation.\n\n"
+            "Don’t forget to ask them to mention your name when they sign up so we can look after both of you."
+        )
+
+        clear_flow(chat_id)
+
+        send_refer_friend_to_outlet(chat_id, reply)
+
+        return add_customer_service_id_note(reply, chat_id)
 
         reply = (
             "Refer-a-Friend Summary:\n"
