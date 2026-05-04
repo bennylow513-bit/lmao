@@ -265,6 +265,45 @@ def studio_options_text(include_not_specified: bool = False) -> str:
 
     return "\n".join(options)
 
+def numbered_studio_options_text(include_not_specified: bool = False) -> str:
+    options = []
+
+    for index, name in enumerate(studio_names(), start=1):
+        options.append(f"{index}. {name}")
+
+    if include_not_specified:
+        options.append(f"{len(studio_names()) + 1}. Not specified")
+
+    return "\n".join(options)
+
+
+def outlet_from_number_or_text(text: str, include_not_specified: bool = False) -> str:
+    choice = normalize(text)
+    studios = studio_names()
+
+    if choice.isdigit():
+        number = int(choice)
+
+        if 1 <= number <= len(studios):
+            return studios[number - 1]
+
+        if include_not_specified and number == len(studios) + 1:
+            return "Not specified"
+
+    if include_not_specified and choice in {
+        "not specified",
+        "no",
+        "no specific outlet",
+        "any",
+        "any outlet",
+        "not sure",
+        "idk",
+        "does not matter",
+    }:
+        return "Not specified"
+
+    return detect_outlet_from_text(text)
+
 
 def studio_aliases(studio_name: str) -> List[str]:
     clean = simple_text(studio_name)
@@ -926,7 +965,7 @@ def ask_outlet_before_handoff_text(chat_id: str, user_text: str) -> str:
     fallback = (
         "Before I pass this to our Customer Service team, do you have a specific outlet for this enquiry?\n\n"
         "Please reply with one of these:\n"
-        f"{studio_options_text(include_not_specified=True)}"
+        f"{numbered_studio_options_text(include_not_specified=True)}"
     )
 
     return knowledge_reply(
@@ -1401,7 +1440,7 @@ def handle_main_menu_choice(chat_id: str, text: str) -> str:
         return (
             "Sure — let’s schedule your trial class. 🙏\n\n"
             "Which studio would you prefer?\n\n"
-            f"{studio_options_text()}"
+            f"{numbered_studio_options_text()}"
         )
 
     if choice == "2":
@@ -1537,12 +1576,12 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
 
     if stage == "trial_outlet":
-        outlet = detect_outlet_from_text(text)
+        outlet = outlet_from_number_or_text(text)
 
         if not outlet:
             return (
                 "Which studio would you prefer?\n\n"
-                f"{studio_options_text()}"
+                f"{numbered_studio_options_text()}"
             )
 
         set_flow(chat_id, "trial_name", outlet=outlet)
@@ -1647,16 +1686,16 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
 
         return (
             "Which studio would your friend prefer?\n\n"
-            f"{studio_options_text()}"
+            f"{numbered_studio_options_text()}"
         )
 
     if stage == "refer_friend_studio":
-        outlet = detect_outlet_from_text(text)
+        outlet = outlet_from_number_or_text(text)
 
         if not outlet:
             return (
                 "Please choose one of these studios:\n\n"
-                f"{studio_options_text()}"
+                f"{numbered_studio_options_text()}"
             )
 
         referral = {
