@@ -8,3 +8,5 @@ watchdog
 python-docx
 openpyxl
 python-pptx
+playwright
+beautifulsoup4

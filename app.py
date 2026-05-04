@@ -34,7 +34,13 @@ CUSTOMER_SERVICE_TELEGRAM_CHAT_ID = os.getenv("CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
 
 PORT = int(os.getenv("PORT", "5000"))
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
+CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
+CUSTOMER_SERVICE_TELEGRAM_CHAT_ID = os.getenv("CUSTOMER_SERVICE_TELEGRAM_CHAT_ID", "")
 
+PORT = int(os.getenv("PORT", "5000"))
+OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
+
+JAL_SCHEDULE_URL = "https://www.jalyoga.com.sg/jal-schedule/"
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 
@@ -2259,6 +2265,185 @@ def handle_staff_hub_flow(chat_id: str, text: str) -> str:
         )
 
     return ""
+# =========================
+# LIVE JAL YOGA SCHEDULE
+# =========================
+
+SCHEDULE_CACHE = {
+    "updated_at": 0,
+    "text": "",
+}
+
+SCHEDULE_CACHE_SECONDS = 300  # 5 minutes
+
+
+def is_schedule_request(text: str) -> bool:
+    t = normalize(text)
+
+    keywords = [
+        "schedule",
+        "schdule",
+        "sched",
+        "timetable",
+        "time table",
+        "class timing",
+        "class timings",
+        "class time",
+        "class times",
+        "what class",
+        "classes today",
+        "today class",
+        "today schedule",
+        "tomorrow schedule",
+        "available class",
+        "available classes",
+        "slot",
+        "slots",
+        "jadual",
+        "时间表",
+        "課表",
+        "课程表",
+    ]
+
+    return any(keyword in t for keyword in keywords)
+
+
+def fetch_jal_schedule_page_text() -> str:
+    """
+    Opens the Jal Yoga schedule page with a real browser so JavaScript-loaded
+    schedule content has a chance to appear.
+    """
+    now = time.time()
+
+    if (
+        SCHEDULE_CACHE["text"]
+        and now - float(SCHEDULE_CACHE["updated_at"]) < SCHEDULE_CACHE_SECONDS
+    ):
+        return SCHEDULE_CACHE["text"]
+
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
+
+            page = browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+            )
+
+            page.goto(JAL_SCHEDULE_URL, wait_until="networkidle", timeout=60000)
+
+            # Wait a bit more for schedule widgets/tabs to load
+            page.wait_for_timeout(5000)
+
+            # Try clicking outlet tabs/buttons so hidden schedule content can load
+            for outlet in studio_names():
+                try:
+                    page.get_by_text(outlet, exact=True).first.click(timeout=2000)
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+
+            text = page.locator("body").inner_text(timeout=30000)
+
+            browser.close()
+
+        text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+        SCHEDULE_CACHE["text"] = text
+        SCHEDULE_CACHE["updated_at"] = now
+
+        return text
+
+    except Exception as e:
+        print("JAL SCHEDULE SCRAPE ERROR:", str(e), flush=True)
+        traceback.print_exc()
+        return ""
+
+
+def format_schedule_with_llm(chat_id: str, user_text: str, schedule_text: str) -> str:
+    if not schedule_text:
+        return (
+            "I’m sorry — I couldn’t load the live Jal Yoga schedule right now.\n\n"
+            "Please try again later, or type CUSTOMER SERVICE for help."
+        )
+
+    if not client:
+        return (
+            "I loaded the schedule page, but the AI formatting service is not configured.\n\n"
+            "Please type CUSTOMER SERVICE for help."
+        )
+
+    requested_outlet = detect_outlet_from_text(user_text)
+
+    outlet_instruction = ""
+    if requested_outlet:
+        outlet_instruction = f"The customer is asking about the {requested_outlet} outlet."
+
+    instructions = f"""
+You are Jal Yoga Singapore's Telegram customer-service assistant.
+
+The customer asked for the class schedule.
+
+Use ONLY the live schedule page text below.
+Do not give only the website link.
+Do not invent classes, dates, times, trainers, or slots.
+If the schedule page text does not contain actual class timings, say clearly:
+"I’m sorry — I can see the Jal Yoga schedule page, but I cannot read the live class timings from it right now."
+
+Customer request:
+{user_text}
+
+{outlet_instruction}
+
+Rules:
+- Reply with the schedule details directly in chat.
+- If the customer asks for one outlet, only show that outlet.
+- If the customer asks "today", show today only if the live text has today’s classes.
+- Keep it concise and easy to read.
+- Include class name, day/date, time, outlet, trainer, and slots only if available.
+- Do not mention Python, scraping, Playwright, Render, or internal code.
+"""
+
+    try:
+        response = client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=instructions,
+            input=(
+                "LIVE JAL YOGA SCHEDULE PAGE TEXT:\n"
+                f"{schedule_text[:25000]}"
+            ),
+        )
+
+        reply = (response.output_text or "").strip()
+
+        if reply:
+            return reply
+
+    except Exception as e:
+        print("SCHEDULE LLM FORMAT ERROR:", str(e), flush=True)
+        traceback.print_exc()
+
+    return (
+        "I’m sorry — I couldn’t format the live schedule right now.\n\n"
+        "Please try again later, or type CUSTOMER SERVICE for help."
+    )
+
+
+def live_schedule_reply(chat_id: str, user_text: str) -> str:
+    schedule_text = fetch_jal_schedule_page_text()
+    return format_schedule_with_llm(chat_id, user_text, schedule_text)
 
 # =========================
 # PROCESS MESSAGE
@@ -2308,6 +2493,14 @@ def process_message(chat_id: str, user_text: str) -> str:
             "CVV, OTP, passwords, or bank details here.\n\n"
             "For account-specific or payment-related help, please type CUSTOMER SERVICE."
         )
+
+    if is_schedule_request(text):
+        reply = live_schedule_reply(chat_id, text)
+
+        add_history(chat_id, "user", text)
+        add_history(chat_id, "assistant", reply)
+
+        return reply + "\n\nReply MENU to return to the main menu."
 
     if is_class_cancellation_request(text):
         clear_flow(chat_id)
