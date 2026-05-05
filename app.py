@@ -1260,8 +1260,57 @@ DEFAULT_SCHEDULE = {
 }
 
 
+def fuzzy_phrase_match(text: str, phrases: List[str], threshold: float = 0.76) -> bool:
+    clean = simple_text(text)
+
+    if not clean:
+        return False
+
+    words = clean.split()
+    padded = f" {clean} "
+
+    for phrase in phrases:
+        target = simple_text(phrase)
+
+        if not target:
+            continue
+
+        if f" {target} " in padded:
+            return True
+
+        target_words = target.split()
+        size = len(target_words)
+
+        if size == 0 or len(words) < size:
+            continue
+
+        for i in range(len(words) - size + 1):
+            chunk = " ".join(words[i:i + size])
+            score = SequenceMatcher(None, chunk, target).ratio()
+
+            if score >= threshold:
+                return True
+
+    return False
+
+
 def is_schedule_request(text: str) -> bool:
     t = normalize(text)
+    clean = simple_text(text)
+
+    if not clean and not text.strip():
+        return False
+
+    non_english_schedule_words = [
+        "jadual",
+        "时间表",
+        "時間表",
+        "課表",
+        "课程表",
+    ]
+
+    if any(word in t or word in text for word in non_english_schedule_words):
+        return True
 
     keywords = [
         "schedule",
@@ -1269,26 +1318,65 @@ def is_schedule_request(text: str) -> bool:
         "sched",
         "timetable",
         "time table",
+        "class schedule",
+        "class timetable",
         "class timing",
         "class timings",
         "class time",
         "class times",
         "what class",
+        "what classes",
         "classes today",
         "today class",
+        "today classes",
         "today schedule",
         "tomorrow schedule",
         "available class",
         "available classes",
+        "available slot",
+        "available slots",
         "slot",
         "slots",
-        "jadual",
-        "时间表",
-        "課表",
-        "课程表",
+        "timing",
+        "timings",
+        "timeslot",
+        "timeslots",
     ]
 
-    return any(keyword in t for keyword in keywords)
+    if any(keyword in t for keyword in keywords):
+        return True
+
+    context_patterns = [
+        r"\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b.*\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b",
+        r"\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b.*\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b",
+    ]
+
+    if any(re.search(pattern, clean, flags=re.IGNORECASE) for pattern in context_patterns):
+        return True
+
+    fuzzy_schedule_phrases = [
+        "schedule",
+        "schdule",
+        "schedle",
+        "schedual",
+        "secdule",
+        "scedule",
+        "scehdule",
+        "shedule",
+        "skedule",
+        "timetable",
+        "timetabel",
+        "timetble",
+        "time table",
+        "class schedule",
+        "class timing",
+        "class timetable",
+    ]
+
+    if fuzzy_phrase_match(text, fuzzy_schedule_phrases, threshold=0.76):
+        return True
+
+    return False
 
 
 def load_schedule_data() -> dict:
@@ -1813,6 +1901,22 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
 def handle_corporate_flow(chat_id: str, text: str) -> str:
     flow = get_flow(chat_id)
     stage = get_flow_stage(chat_id)
+
+    # GLOBAL SCHEDULE SHORTCUT
+    # This makes schedule work anytime, even if user spells it wrongly.
+    # Examples: schedule, secdule, schedual, scedule, timetable, class timing.
+    # It will show the timetable instead of giving the website link.
+    if is_schedule_request(text):
+        requested_outlet = detect_outlet_choice(text)
+
+        if requested_outlet:
+            clear_flow(chat_id)
+            reply = live_schedule_reply(chat_id, text, forced_outlet=requested_outlet)
+            return finish_reply(chat_id, text, reply)
+
+        set_flow(chat_id, "schedule_outlet")
+        reply = live_schedule_reply(chat_id, text)
+        return finish_reply(chat_id, text, reply)
 
     if stage == "corporate_name":
         name = text.strip()
