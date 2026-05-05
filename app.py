@@ -49,6 +49,7 @@ TRIAL_BOOKINGS: Dict[str, Dict[str, str]] = {}
 FLOW_STATE: Dict[str, Dict[str, str]] = {}
 INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 USER_LANGUAGE: Dict[str, str] = {}
+LIVE_SUPPORT_CHATS: Dict[str, Dict[str, str]] = {}
 
 INACTIVITY_WARNING_SECONDS = 600
 INACTIVITY_CLOSE_SECONDS = 1200
@@ -1145,6 +1146,128 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
 
 
 # =========================
+# LIVE CUSTOMER SERVICE CHAT
+# =========================
+
+def get_customer_service_chat_ids() -> set:
+    chat_ids = set()
+
+    if CUSTOMER_SERVICE_TELEGRAM_CHAT_ID:
+        chat_ids.add(str(CUSTOMER_SERVICE_TELEGRAM_CHAT_ID))
+
+    for studio in STUDIOS:
+        outlet_chat_id = outlet_telegram_chat_id(studio["name"])
+
+        if outlet_chat_id:
+            chat_ids.add(str(outlet_chat_id))
+
+    return chat_ids
+
+
+def is_customer_service_chat(chat_id: str) -> bool:
+    return str(chat_id) in get_customer_service_chat_ids()
+
+
+def handle_customer_service_command(chat_id: str, text: str) -> str:
+    clean = text.strip()
+
+    if clean.lower().startswith("/reply"):
+        if not is_customer_service_chat(chat_id):
+            return "Sorry, this command is only for Customer Service."
+
+        parts = clean.split(maxsplit=2)
+
+        if len(parts) < 3:
+            return (
+                "Please use this format:\n\n"
+                "/reply CUSTOMER_CHAT_ID your message\n\n"
+                "Example:\n"
+                "/reply 123456789 Hi, this is Jal Yoga Customer Service. How can I help?"
+            )
+
+        customer_chat_id = parts[1].strip()
+        message = parts[2].strip()
+
+        if not customer_chat_id or not message:
+            return "Please use this format:\n\n/reply CUSTOMER_CHAT_ID your message"
+
+        send_telegram_message(
+            customer_chat_id,
+            (
+                "Jal Yoga Customer Service 🙏\n\n"
+                f"{message}\n\n"
+                "You may reply here and our Customer Service team will receive your message."
+            ),
+        )
+
+        LIVE_SUPPORT_CHATS[customer_chat_id] = {
+            "target_chat_id": str(chat_id),
+            "outlet": "Customer Service",
+            "last_active_at": now_sg(),
+        }
+
+        return f"Sent to customer {customer_chat_id}."
+
+    if clean.lower().startswith("/close"):
+        if not is_customer_service_chat(chat_id):
+            return "Sorry, this command is only for Customer Service."
+
+        parts = clean.split(maxsplit=1)
+
+        if len(parts) < 2:
+            return (
+                "Please use this format:\n\n"
+                "/close CUSTOMER_CHAT_ID\n\n"
+                "Example:\n"
+                "/close 123456789"
+            )
+
+        customer_chat_id = parts[1].strip()
+
+        LIVE_SUPPORT_CHATS.pop(customer_chat_id, None)
+
+        send_telegram_message(
+            customer_chat_id,
+            (
+                "Customer Service has closed this chat for now. 🙏\n\n"
+                "If you need help again, type CUSTOMER SERVICE anytime."
+            ),
+        )
+
+        return f"Closed live chat with customer {customer_chat_id}."
+
+    return ""
+
+
+def forward_customer_message_to_support(customer_chat_id: str, text: str) -> bool:
+    live_chat = LIVE_SUPPORT_CHATS.get(customer_chat_id, {})
+    target_chat_id = live_chat.get("target_chat_id", "")
+
+    if not target_chat_id:
+        target_chat_id = CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
+
+    if not target_chat_id:
+        return False
+
+    LIVE_SUPPORT_CHATS[customer_chat_id] = {
+        "target_chat_id": str(target_chat_id),
+        "outlet": live_chat.get("outlet", "Customer Service"),
+        "last_active_at": now_sg(),
+    }
+
+    message = (
+        "Customer replied in live chat 🙏\n\n"
+        f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
+        f"Message:\n{text}\n\n"
+        f"Reply using:\n/reply {customer_chat_id} your message\n\n"
+        f"Close chat using:\n/close {customer_chat_id}"
+    )
+
+    send_telegram_message(target_chat_id, message)
+    return True
+
+
+# =========================
 # CUSTOMER SERVICE HANDOFF
 # =========================
 
@@ -1164,10 +1287,20 @@ def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answe
         )
         return False
 
+    LIVE_SUPPORT_CHATS[customer_chat_id] = {
+        "target_chat_id": str(target_chat_id),
+        "outlet": outlet or "Not specified",
+        "last_active_at": now_sg(),
+    }
+
     message = (
         "New Customer Service Handoff 🙏\n\n"
         f"{clean_answer}\n\n"
-        f"Customer Telegram Chat ID: {customer_chat_id}"
+        f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
+        "To reply to this customer, type:\n"
+        f"/reply {customer_chat_id} your message\n\n"
+        "To close the live chat, type:\n"
+        f"/close {customer_chat_id}"
     )
 
     try:
@@ -1178,7 +1311,6 @@ def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answe
         print("CUSTOMER SERVICE HANDOFF SEND ERROR:", str(e), flush=True)
         traceback.print_exc()
         return False
-
 
 # =========================
 # TRIAL BOOKING
@@ -2249,6 +2381,11 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     mark_chat_active(chat_id)
 
+    customer_service_command_reply = handle_customer_service_command(chat_id, text)
+
+    if customer_service_command_reply:
+        return finish_reply(chat_id, text, customer_service_command_reply, add_menu=False)
+
     language_switch = detect_language_switch_request(text)
 
     if language_switch:
@@ -2295,6 +2432,31 @@ def process_message(chat_id: str, user_text: str) -> str:
         set_flow(chat_id, "main_menu")
 
         return finish_reply(chat_id, text, main_menu_text())
+
+    if chat_id in LIVE_SUPPORT_CHATS:
+        if norm in {"end chat", "close chat", "stop live chat", "exit live chat"}:
+            LIVE_SUPPORT_CHATS.pop(chat_id, None)
+
+            return finish_reply(
+                chat_id,
+                text,
+                (
+                    "Live Customer Service chat has been closed. 🙏\n\n"
+                    "You can type MENU to return to the main menu."
+                ),
+            )
+
+        sent_to_support = forward_customer_message_to_support(chat_id, text)
+
+        if sent_to_support:
+            return finish_reply(
+                chat_id,
+                text,
+                (
+                    "I’ve sent your message to Customer Service. 🙏\n\n"
+                    "Please wait for their reply here."
+                ),
+            )
 
     stage = get_flow_stage(chat_id)
 
