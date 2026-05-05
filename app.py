@@ -663,20 +663,173 @@ def is_class_cancellation_request(text: str) -> bool:
 
 def is_customer_service_request(text: str) -> bool:
     t = normalize(text)
+    clean = simple_text(text)
+    raw = (text or "").strip().lower()
 
+    if not raw:
+        return False
+
+    # Exact short commands.
+    exact_words = {
+        "cs",
+        "support",
+        "helpdesk",
+        "客服",
+        "人工",
+        "人工客服",
+        "真人",
+        "真人客服",
+        "客户服务",
+        "客戶服務",
+        "我要客服",
+        "我要人工",
+        "转人工",
+        "轉人工",
+        "联系人工",
+        "聯繫人工",
+        "hubungi admin",
+        "admin",
+        "khidmat pelanggan",
+        "layanan pelanggan",
+        "bantuan manusia",
+        "சேவை",
+        "உதவி",
+    }
+
+    if t in exact_words or raw in exact_words:
+        return True
+
+    # English / Singlish / typo-friendly phrases.
     phrases = [
         "customer service",
-        "human",
-        "real person",
-        "staff",
+        "customer support",
+        "customer care",
+        "customer servide",
+        "customer servis",
+        "cust service",
+        "cs team",
+        "support team",
+        "contact support",
+        "contact customer service",
+        "speak to customer service",
+        "talk to customer service",
         "talk to someone",
         "speak to someone",
-        "speak to team",
-        "contact support",
-        "support team",
+        "talk to a human",
+        "speak to a human",
+        "human agent",
+        "real person",
+        "live agent",
+        "live chat",
+        "need human",
+        "need staff help",
+        "talk to staff",
+        "speak to staff",
+        "connect me to staff",
+        "connect me to customer service",
+        "can i talk to someone",
+        "can i speak to someone",
+        "i want customer service",
+        "i need customer service",
+        "i want to talk to staff",
+        "i need to talk to staff",
     ]
 
-    return any(phrase in t for phrase in phrases)
+    if any(phrase in t for phrase in phrases):
+        return True
+
+    # Chinese phrases.
+    chinese_phrases = [
+        "客服",
+        "人工客服",
+        "真人客服",
+        "客户服务",
+        "客戶服務",
+        "联系工作人员",
+        "聯繫工作人員",
+        "联系人工",
+        "聯繫人工",
+        "转人工",
+        "轉人工",
+        "找人",
+        "我要找人",
+        "我要人工",
+        "我要客服",
+        "我想找客服",
+        "可以找客服吗",
+        "可以找客服嗎",
+        "我要和人说话",
+        "我要和人說話",
+    ]
+
+    if any(phrase in raw for phrase in chinese_phrases):
+        return True
+
+    # Malay / Indonesian phrases.
+    malay_phrases = [
+        "khidmat pelanggan",
+        "layanan pelanggan",
+        "servis pelanggan",
+        "customer servis",
+        "bercakap dengan staff",
+        "bercakap dengan manusia",
+        "cakap dengan orang",
+        "nak cakap dengan staff",
+        "nak customer service",
+        "saya mahu customer service",
+        "saya nak bantuan manusia",
+        "hubungi admin",
+        "hubungi staf",
+        "bantuan admin",
+    ]
+
+    if any(phrase in raw for phrase in malay_phrases):
+        return True
+
+    # Tamil phrases.
+    tamil_phrases = [
+        "வாடிக்கையாளர் சேவை",
+        "வாடிக்கையாளர் ஆதரவு",
+        "மனித உதவி",
+        "ஒருவரிடம் பேச",
+        "உதவி வேண்டும்",
+        "staff உடன் பேச",
+    ]
+
+    if any(phrase in raw for phrase in tamil_phrases):
+        return True
+
+    # Fuzzy matching for short typo messages like "custumer servise".
+    fuzzy_targets = [
+        "customer service",
+        "customer support",
+        "customer care",
+        "support team",
+        "human agent",
+        "real person",
+        "live agent",
+        "talk to someone",
+        "speak to someone",
+        "talk to staff",
+        "speak to staff",
+    ]
+
+    words = clean.split()
+    for target in fuzzy_targets:
+        target_clean = simple_text(target)
+        target_size = len(target_clean.split())
+
+        if target_size == 0 or len(words) < target_size:
+            continue
+
+        for i in range(len(words) - target_size + 1):
+            chunk = " ".join(words[i:i + target_size])
+            score = SequenceMatcher(None, chunk, target_clean).ratio()
+
+            if score >= 0.78:
+                return True
+
+    return False
 
 
 def is_outlet_contact_request(text: str) -> bool:
@@ -1061,7 +1214,7 @@ def main_menu_text() -> str:
         "3. I’d like to find out more about Jal Yoga\n"
         "4. Corporate/Partnerships\n"
         "5. Staff Hub\n\n"
-        "You can also type CUSTOMER SERVICE anytime to speak to our team.\n"
+        "You can also type CUSTOMER SERVICE anytime, in any language, to speak to our team.\n"
         "Reply STOP anytime to stop receiving follow-up messages."
     )
 
@@ -1092,6 +1245,41 @@ def ask_outlet_before_handoff_text() -> str:
         "Before I pass this to our Customer Service team, do you have a specific outlet for this enquiry?\n\n"
         "Please reply with one of these:\n"
         f"{studio_options_text(include_not_specified=True)}"
+    )
+
+
+def start_customer_service_flow(chat_id: str, text: str) -> str:
+    outlet = detect_outlet_choice(text)
+
+    clean_answer = (
+        "I’ll pass this to our Customer Service team.\n\n"
+        "Summary:\n"
+        "- Topic: Customer Service Request\n"
+        f"- Outlet: {outlet or 'Not specified'}\n"
+        f"- Message: {text}"
+    )
+
+    if not outlet:
+        PENDING_HANDOFFS[chat_id] = {
+            "user_message": text,
+            "clean_answer": clean_answer,
+        }
+        set_flow(chat_id, "pending_handoff_outlet")
+        return ask_outlet_before_handoff_text()
+
+    clear_flow(chat_id)
+    sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
+
+    if sent:
+        return (
+            f"{clean_answer}\n\n"
+            f"I’ve sent this summary to our {outlet} Customer Service team on Telegram. 🙏\n\n"
+            "You are now connected to Customer Service. You may reply here and our team will receive your message."
+        )
+
+    return (
+        f"{clean_answer}\n\n"
+        "Customer Service Telegram chat is not configured yet."
     )
 
 
@@ -1145,6 +1333,7 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
     return True
 
 
+
 # =========================
 # LIVE CUSTOMER SERVICE CHAT
 # =========================
@@ -1168,10 +1357,43 @@ def is_customer_service_chat(chat_id: str) -> bool:
     return str(chat_id) in get_customer_service_chat_ids()
 
 
+def get_support_target_chat_id(outlet: str = "") -> str:
+    target_chat_id = ""
+
+    if outlet and outlet != "Not specified":
+        target_chat_id = outlet_telegram_chat_id(outlet)
+
+    if not target_chat_id:
+        target_chat_id = CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
+
+    return str(target_chat_id or "")
+
+
+def open_live_support_chat(customer_chat_id: str, target_chat_id: str, outlet: str = "Not specified") -> None:
+    if not target_chat_id:
+        return
+
+    LIVE_SUPPORT_CHATS[str(customer_chat_id)] = {
+        "target_chat_id": str(target_chat_id),
+        "outlet": outlet or "Not specified",
+        "last_active_at": now_sg(),
+    }
+
+
+def support_reply_instructions(customer_chat_id: str) -> str:
+    return (
+        "To reply to this customer, type:\n"
+        f"/reply {customer_chat_id} your message\n\n"
+        "To close the live chat, type:\n"
+        f"/close {customer_chat_id}"
+    )
+
+
 def handle_customer_service_command(chat_id: str, text: str) -> str:
     clean = text.strip()
+    lower = clean.lower()
 
-    if clean.lower().startswith("/reply"):
+    if lower.startswith("/reply"):
         if not is_customer_service_chat(chat_id):
             return "Sorry, this command is only for Customer Service."
 
@@ -1200,15 +1422,17 @@ def handle_customer_service_command(chat_id: str, text: str) -> str:
             ),
         )
 
-        LIVE_SUPPORT_CHATS[customer_chat_id] = {
-            "target_chat_id": str(chat_id),
-            "outlet": "Customer Service",
-            "last_active_at": now_sg(),
-        }
+        live_chat = LIVE_SUPPORT_CHATS.get(customer_chat_id, {})
+
+        open_live_support_chat(
+            customer_chat_id,
+            str(chat_id),
+            live_chat.get("outlet", "Customer Service"),
+        )
 
         return f"Sent to customer {customer_chat_id}."
 
-    if clean.lower().startswith("/close"):
+    if lower.startswith("/close"):
         if not is_customer_service_chat(chat_id):
             return "Sorry, this command is only for Customer Service."
 
@@ -1223,7 +1447,6 @@ def handle_customer_service_command(chat_id: str, text: str) -> str:
             )
 
         customer_chat_id = parts[1].strip()
-
         LIVE_SUPPORT_CHATS.pop(customer_chat_id, None)
 
         send_telegram_message(
@@ -1249,11 +1472,11 @@ def forward_customer_message_to_support(customer_chat_id: str, text: str) -> boo
     if not target_chat_id:
         return False
 
-    LIVE_SUPPORT_CHATS[customer_chat_id] = {
-        "target_chat_id": str(target_chat_id),
-        "outlet": live_chat.get("outlet", "Customer Service"),
-        "last_active_at": now_sg(),
-    }
+    open_live_support_chat(
+        customer_chat_id,
+        str(target_chat_id),
+        live_chat.get("outlet", "Customer Service"),
+    )
 
     message = (
         "Customer replied in live chat 🙏\n\n"
@@ -1266,19 +1489,12 @@ def forward_customer_message_to_support(customer_chat_id: str, text: str) -> boo
     send_telegram_message(target_chat_id, message)
     return True
 
-
 # =========================
 # CUSTOMER SERVICE HANDOFF
 # =========================
 
 def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answer: str, outlet: str) -> bool:
-    target_chat_id = ""
-
-    if outlet and outlet != "Not specified":
-        target_chat_id = outlet_telegram_chat_id(outlet)
-
-    if not target_chat_id:
-        target_chat_id = CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
+    target_chat_id = get_support_target_chat_id(outlet)
 
     if not target_chat_id:
         print(
@@ -1287,20 +1503,14 @@ def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answe
         )
         return False
 
-    LIVE_SUPPORT_CHATS[customer_chat_id] = {
-        "target_chat_id": str(target_chat_id),
-        "outlet": outlet or "Not specified",
-        "last_active_at": now_sg(),
-    }
+    open_live_support_chat(customer_chat_id, target_chat_id, outlet or "Not specified")
 
     message = (
         "New Customer Service Handoff 🙏\n\n"
         f"{clean_answer}\n\n"
         f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
-        "To reply to this customer, type:\n"
-        f"/reply {customer_chat_id} your message\n\n"
-        "To close the live chat, type:\n"
-        f"/close {customer_chat_id}"
+        "This customer is now connected to live Customer Service chat.\n\n"
+        f"{support_reply_instructions(customer_chat_id)}"
     )
 
     try:
@@ -1311,6 +1521,7 @@ def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answe
         print("CUSTOMER SERVICE HANDOFF SEND ERROR:", str(e), flush=True)
         traceback.print_exc()
         return False
+
 
 # =========================
 # TRIAL BOOKING
@@ -1330,7 +1541,13 @@ def send_trial_booking_to_outlet(customer_chat_id: str, booking: Dict[str, str])
         "fitness_goal": fitness_goal,
     }
 
-    target_chat_id = outlet_telegram_chat_id(outlet)
+    target_chat_id = get_support_target_chat_id(outlet)
+
+    if not target_chat_id:
+        print("TRIAL BOOKING SEND SKIPPED: No target chat ID", flush=True)
+        return False
+
+    open_live_support_chat(customer_chat_id, target_chat_id, outlet)
 
     message = (
         "New Trial Booking Received 🙏\n\n"
@@ -1338,24 +1555,10 @@ def send_trial_booking_to_outlet(customer_chat_id: str, booking: Dict[str, str])
         "Class: Trial Class\n"
         f"Name: {name or 'Not provided'}\n"
         f"Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
-        f"Customer Telegram Chat ID: {customer_chat_id}"
+        f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
+        "This customer is now connected to live Customer Service chat.\n\n"
+        f"{support_reply_instructions(customer_chat_id)}"
     )
-
-    if not target_chat_id:
-        target_chat_id = CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
-        message = (
-            "New Trial Booking Received 🙏\n\n"
-            "⚠️ Outlet Telegram group is not configured, so this was sent to main Customer Service.\n\n"
-            f"Outlet: {outlet}\n"
-            "Class: Trial Class\n"
-            f"Name: {name or 'Not provided'}\n"
-            f"Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
-            f"Customer Telegram Chat ID: {customer_chat_id}"
-        )
-
-    if not target_chat_id:
-        print("TRIAL BOOKING SEND SKIPPED: No target chat ID", flush=True)
-        return False
 
     try:
         send_telegram_message(target_chat_id, message)
@@ -1378,21 +1581,22 @@ def send_refer_friend_to_outlet(customer_chat_id: str, referral: Dict[str, str])
     if not outlet:
         return False
 
-    target_chat_id = outlet_telegram_chat_id(outlet)
-
-    if not target_chat_id:
-        target_chat_id = CUSTOMER_SERVICE_TELEGRAM_CHAT_ID
+    target_chat_id = get_support_target_chat_id(outlet)
 
     if not target_chat_id:
         print("REFER FRIEND SEND SKIPPED: No target chat ID", flush=True)
         return False
+
+    open_live_support_chat(customer_chat_id, target_chat_id, outlet)
 
     message = (
         "New Refer-a-Friend Received ✨\n\n"
         f"Preferred Studio: {outlet}\n"
         f"Friend Name: {friend_name or 'Not provided'}\n"
         f"Friend Contact: {friend_contact or 'Not provided'}\n\n"
-        f"Referrer Telegram Chat ID: {customer_chat_id}"
+        f"Referrer Telegram Chat ID: {customer_chat_id}\n\n"
+        "This customer is now connected to live Customer Service chat.\n\n"
+        f"{support_reply_instructions(customer_chat_id)}"
     )
 
     try:
@@ -1800,7 +2004,7 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
     choice = normalize(text)
 
     if choice == "1":
-        clear_flow(chat_id)
+        set_flow(chat_id, "member_cancel_details")
 
         return (
             "Class Cancellation Policy 🙏\n\n"
@@ -1809,31 +2013,35 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
             "- Cancellations made less than 2 hours before class are late cancellations\n"
             "- No-shows are also counted as late cancellations\n"
             "- After 3 late cancellations, booking access may be suspended for 7 calendar days\n\n"
-            "To cancel a specific booked class, please reply with:\n"
+            "If you want Customer Service to help with a specific booked class, please reply with:\n"
             "- Outlet\n"
             "- Class name\n"
-            "- Date and time"
+            "- Date and time\n\n"
+            "After you send the details, I’ll connect you to Customer Service here."
         )
 
     if choice == "2":
-        clear_flow(chat_id)
+        set_flow(chat_id, "member_suspension_details")
 
         return (
-            "Sure — is this for Medical Suspension or Non-Medical / Travel Suspension?\n\n"
-            "Medical Suspension usually requires a certified doctor’s memo.\n"
-            "Non-Medical / Travel Suspension may include a monthly extension fee."
+            "Sure — I’ll connect you to Customer Service for membership suspension. 🙏\n\n"
+            "Please reply with:\n"
+            "- Medical Suspension or Non-Medical / Travel Suspension\n"
+            "- Your preferred outlet, if any\n"
+            "- Any important details"
         )
 
     if choice == "3":
-        clear_flow(chat_id)
+        set_flow(chat_id, "member_booking_issue_details")
 
         return (
-            "Sure — I can help with class booking questions.\n\n"
+            "Sure — I’ll connect you to Customer Service for class booking help. 🙏\n\n"
             "Please tell me what issue you’re facing, for example:\n"
             "- cannot book a class\n"
             "- class is full\n"
             "- need help checking a schedule\n"
-            "- app booking issue"
+            "- app booking issue\n\n"
+            "Please include the outlet if you know it."
         )
 
     if choice == "4":
@@ -1841,6 +2049,57 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
         return "That’s wonderful — what is your friend’s full name?"
 
     return current_member_menu_text()
+
+
+
+def handle_member_service_flow(chat_id: str, text: str) -> str:
+    stage = get_flow_stage(chat_id)
+    outlet = detect_outlet_choice(text)
+
+    if stage == "member_cancel_details":
+        topic = "Class Cancellation"
+        prompt_if_empty = "Please share the outlet, class name, date, and time for the class you want help with."
+    elif stage == "member_suspension_details":
+        topic = "Membership Suspension"
+        prompt_if_empty = "Please share whether this is medical or non-medical/travel suspension, plus your preferred outlet if any."
+    elif stage == "member_booking_issue_details":
+        topic = "Class Booking Help"
+        prompt_if_empty = "Please share the booking issue and outlet if you know it."
+    else:
+        return ""
+
+    details = text.strip()
+
+    if len(details) < 2:
+        return prompt_if_empty
+
+    clean_answer = (
+        "I’ll pass this to our Customer Service team.\n\n"
+        "Summary:\n"
+        f"- Topic: {topic}\n"
+        f"- Outlet: {outlet or 'Not specified'}\n"
+        f"- Message: {details}"
+    )
+
+    if not outlet:
+        PENDING_HANDOFFS[chat_id] = {
+            "user_message": details,
+            "clean_answer": clean_answer,
+        }
+        set_flow(chat_id, "pending_handoff_outlet")
+        return ask_outlet_before_handoff_text()
+
+    clear_flow(chat_id)
+    sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
+
+    if sent:
+        return (
+            f"{clean_answer}\n\n"
+            f"I’ve sent this to our {outlet} Customer Service team. 🙏\n\n"
+            "You are now connected to Customer Service. You may reply here and our team will receive your message."
+        )
+
+    return f"{clean_answer}\n\nCustomer Service Telegram chat is not configured yet."
 
 
 def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
@@ -2004,8 +2263,9 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
             "- Class: Trial Class\n"
             f"- Name: {name.title()}\n"
             f"- Fitness Goal: {goal}\n\n"
-            f"Thank you! I've sent your details to the {outlet} team. "
-            "Our Studio Manager will contact you within 24 hours to schedule your trial."
+            f"Thank you! I've sent your details to the {outlet} team. 🙏\n\n"
+            "You are now connected to Customer Service. "
+            "You may reply here if you want to ask anything, and our team will receive your message."
         )
 
         return add_customer_service_id_note(reply, chat_id)
@@ -2070,7 +2330,8 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
             f"- Friend Contact: {referral['friend_contact']}\n"
             f"- Preferred Studio: {outlet}\n\n"
             "That’s amazing! We love meeting friends of our Jal Yoga community. ✨\n\n"
-            "Thank you! Our team will reach out to them with a special invitation."
+            "Thank you! Our team will reach out to them with a special invitation.\n\n"
+            "You are now connected to Customer Service. You may reply here if you want to ask anything."
         )
 
         return add_customer_service_id_note(reply, chat_id)
@@ -2359,6 +2620,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         PENDING_HANDOFFS.pop(chat_id, None)
         TRIAL_BOOKINGS.pop(chat_id, None)
         clear_flow(chat_id)
+        LIVE_SUPPORT_CHATS.pop(chat_id, None)
         clear_inactivity_state(chat_id)
 
         return (
@@ -2371,6 +2633,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         save_opt_out_users()
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
+        LIVE_SUPPORT_CHATS.pop(chat_id, None)
         set_flow(chat_id, "main_menu")
         mark_chat_active(chat_id)
 
@@ -2428,10 +2691,28 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_reset_request(text):
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
+        LIVE_SUPPORT_CHATS.pop(chat_id, None)
         clear_flow(chat_id)
         set_flow(chat_id, "main_menu")
 
         return finish_reply(chat_id, text, main_menu_text())
+
+    # CUSTOMER SERVICE SHORTCUT
+    # User can ask for customer service anytime, in any supported language,
+    # even while they are inside another flow like trial booking, schedule, or member help.
+    if is_customer_service_request(text):
+        if chat_id in LIVE_SUPPORT_CHATS:
+            return finish_reply(
+                chat_id,
+                text,
+                (
+                    "You are already connected to Customer Service. 🙏\n\n"
+                    "Please type your message here and our team will receive it."
+                ),
+            )
+
+        reply = start_customer_service_flow(chat_id, text)
+        return finish_reply(chat_id, text, reply)
 
     if chat_id in LIVE_SUPPORT_CHATS:
         if norm in {"end chat", "close chat", "stop live chat", "exit live chat"}:
@@ -2459,6 +2740,12 @@ def process_message(chat_id: str, user_text: str) -> str:
             )
 
     stage = get_flow_stage(chat_id)
+
+    if stage.startswith("member_"):
+        reply = handle_member_service_flow(chat_id, text)
+
+        if reply:
+            return finish_reply(chat_id, text, reply)
 
     if stage == "schedule_outlet":
         reply = handle_schedule_outlet_flow(chat_id, text)
@@ -2541,41 +2828,6 @@ def process_message(chat_id: str, user_text: str) -> str:
             "- Class name\n"
             "- Date and time"
         )
-
-        return finish_reply(chat_id, text, reply)
-
-    if is_customer_service_request(text):
-        outlet = detect_outlet_choice(text)
-
-        clean_answer = (
-            "I’ll pass this to our Customer Service team.\n\n"
-            "Summary:\n"
-            "- Topic: Customer Service Request\n"
-            f"- Outlet: {outlet or 'Not specified'}\n"
-            f"- Message: {text}"
-        )
-
-        if not outlet:
-            PENDING_HANDOFFS[chat_id] = {
-                "user_message": text,
-                "clean_answer": clean_answer,
-            }
-            set_flow(chat_id, "pending_handoff_outlet")
-
-            return finish_reply(chat_id, text, ask_outlet_before_handoff_text())
-
-        sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
-
-        if sent:
-            reply = (
-                f"{clean_answer}\n\n"
-                f"I’ve sent this summary to our {outlet} Customer Service team on Telegram."
-            )
-        else:
-            reply = (
-                f"{clean_answer}\n\n"
-                "Customer Service Telegram group is not configured yet."
-            )
 
         return finish_reply(chat_id, text, reply)
 
