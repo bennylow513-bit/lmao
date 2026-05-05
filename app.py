@@ -699,8 +699,29 @@ def is_outlet_contact_request(text: str) -> bool:
 def detect_language_switch_request(text: str) -> str:
     t = normalize(text)
     clean = simple_text(text)
+    raw = text.strip()
 
-    english_phrases = {
+    english_words = {"english", "eng"}
+    chinese_words = {"chinese", "中文", "华文", "華文", "mandarin"}
+    malay_words = {"malay", "bahasa melayu", "melayu"}
+    tamil_words = {"tamil", "தமிழ்"}
+
+    switch_words = [
+        "change",
+        "switch",
+        "translate",
+        "reply",
+        "speak",
+        "use",
+        "turn",
+        "make",
+        "convert",
+        "chnage",
+        "chage",
+    ]
+
+    # Direct exact requests
+    if t in {
         "english",
         "eng",
         "speak english",
@@ -708,51 +729,78 @@ def detect_language_switch_request(text: str) -> str:
         "reply in english",
         "use english",
         "change to english",
-        "can you speak english",
+        "change into english",
+        "change it to english",
+        "change it into english",
         "english please",
-    }
+    }:
+        return "English"
 
-    chinese_phrases = {
+    if t in {
         "chinese",
         "中文",
         "华文",
+        "華文",
+        "mandarin",
         "speak chinese",
         "reply chinese",
         "reply in chinese",
         "use chinese",
         "change to chinese",
+        "change into chinese",
+        "change it to chinese",
+        "change it into chinese",
+        "translate to chinese",
+        "translate into chinese",
         "chinese please",
-    }
+    }:
+        return "Chinese"
 
-    malay_phrases = {
+    if t in {
         "malay",
         "bahasa melayu",
         "reply malay",
         "reply in malay",
         "use malay",
+        "change to malay",
+        "change into malay",
+        "change it to malay",
+        "change it into malay",
+        "translate to malay",
         "malay please",
-    }
+    }:
+        return "Malay"
 
-    tamil_phrases = {
+    if t in {
         "tamil",
         "தமிழ்",
         "reply tamil",
         "reply in tamil",
         "use tamil",
+        "change to tamil",
+        "change into tamil",
+        "change it to tamil",
+        "change it into tamil",
+        "translate to tamil",
         "tamil please",
-    }
-
-    if t in english_phrases or clean in english_phrases:
-        return "English"
-
-    if t in chinese_phrases or clean in chinese_phrases or text.strip() in chinese_phrases:
-        return "Chinese"
-
-    if t in malay_phrases or clean in malay_phrases:
-        return "Malay"
-
-    if t in tamil_phrases or clean in tamil_phrases or text.strip() in tamil_phrases:
+    }:
         return "Tamil"
+
+    # Flexible typo-friendly detection
+    has_switch_word = any(word in clean for word in switch_words)
+
+    if has_switch_word:
+        if any(word in clean for word in english_words):
+            return "English"
+
+        if any(word in clean for word in chinese_words) or any(word in raw for word in chinese_words):
+            return "Chinese"
+
+        if any(word in clean for word in malay_words):
+            return "Malay"
+
+        if any(word in clean for word in tamil_words) or any(word in raw for word in tamil_words):
+            return "Tamil"
 
     return ""
 
@@ -2206,10 +2254,24 @@ def process_message(chat_id: str, user_text: str) -> str:
     if language_switch:
         USER_LANGUAGE[chat_id] = language_switch
 
-        reply = (
-            f"Okay, I’ll reply in {language_switch} from now on. 🙏\n\n"
-            f"{repeat_current_flow_question(chat_id)}"
-        )
+        last_assistant_reply = ""
+
+        for item in reversed(CHAT_HISTORY.get(chat_id, [])):
+            if item.get("role") == "assistant":
+                last_assistant_reply = item.get("content", "")
+                break
+
+        if last_assistant_reply:
+            reply = (
+                f"Okay, I’ll reply in {language_switch} from now on. 🙏\n\n"
+                "Here is my previous reply translated:\n\n"
+                f"{last_assistant_reply}"
+            )
+        else:
+            reply = (
+                f"Okay, I’ll reply in {language_switch} from now on. 🙏\n\n"
+                f"{repeat_current_flow_question(chat_id)}"
+            )
 
         return finish_reply(chat_id, text, reply)
 
