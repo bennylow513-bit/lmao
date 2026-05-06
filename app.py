@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 from openai import OpenAI
 
 load_dotenv()
@@ -2953,14 +2953,7 @@ def process_message(chat_id: str, user_text: str) -> str:
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify(
-        {
-            "status": "ok",
-            "message": "Jal Yoga Telegram bot server is running.",
-            "telegram_webhook": "/telegram/webhook",
-            "health": "/health",
-        }
-    )
+    return render_template("index.html")
 
 
 @app.route("/health", methods=["GET"])
