@@ -120,6 +120,26 @@ SENSITIVE_KEYWORDS = [
     "bank number",
 ]
 
+BLOCKED_WORDS = [
+    "nigger",
+    "nigga",
+    "chink",
+    "kike",
+    "faggot",
+    "retard",
+]
+
+
+def contains_blocked_word(text: str) -> bool:
+    clean = simple_text(text)
+    words = set(clean.split())
+
+    for blocked in BLOCKED_WORDS:
+        if blocked in words:
+            return True
+
+    return False
+
 
 # =========================
 # BASIC HELPERS
@@ -1413,6 +1433,9 @@ def handle_customer_service_command(chat_id: str, text: str) -> str:
         if not customer_chat_id or not message:
             return "Please use this format:\n\n/reply CUSTOMER_CHAT_ID your message"
 
+        if contains_blocked_word(message):
+            return "Message blocked. Please use professional Customer Service language."
+
         send_telegram_message(
             customer_chat_id,
             (
@@ -2642,7 +2665,7 @@ def process_message(chat_id: str, user_text: str) -> str:
     if chat_id in OPT_OUT_USERS:
         return "You have opted out. Reply START if you want to chat with Jal Yoga again."
 
-    mark_chat_active(chat_id)
+        mark_chat_active(chat_id)
 
     customer_service_command_reply = handle_customer_service_command(chat_id, text)
 
@@ -2688,33 +2711,20 @@ def process_message(chat_id: str, user_text: str) -> str:
             ),
         )
 
-    if is_reset_request(text):
-        reset_history(chat_id)
-        PENDING_HANDOFFS.pop(chat_id, None)
-        LIVE_SUPPORT_CHATS.pop(chat_id, None)
-        clear_flow(chat_id)
-        set_flow(chat_id, "main_menu")
-
-        return finish_reply(chat_id, text, main_menu_text())
-
-    # CUSTOMER SERVICE SHORTCUT
-    # User can ask for customer service anytime, in any supported language,
-    # even while they are inside another flow like trial booking, schedule, or member help.
-    if is_customer_service_request(text):
-        if chat_id in LIVE_SUPPORT_CHATS:
-            return finish_reply(
-                chat_id,
-                text,
-                (
-                    "You are already connected to Customer Service. 🙏\n\n"
-                    "Please type your message here and our team will receive it."
-                ),
-            )
-
-        reply = start_customer_service_flow(chat_id, text)
-        return finish_reply(chat_id, text, reply)
-
+    # LIVE CUSTOMER SERVICE CHAT HAS PRIORITY
+    # If the customer is already connected to Customer Service, normal messages
+    # should go to Customer Service instead of restarting the bot.
+    # Only MENU / START / RESTART exits live chat and returns to the main menu.
     if chat_id in LIVE_SUPPORT_CHATS:
+        if norm in {"menu", "main menu", "restart", "start", "/start", "home"}:
+            LIVE_SUPPORT_CHATS.pop(chat_id, None)
+            reset_history(chat_id)
+            PENDING_HANDOFFS.pop(chat_id, None)
+            clear_flow(chat_id)
+            set_flow(chat_id, "main_menu")
+
+            return finish_reply(chat_id, text, main_menu_text())
+
         if norm in {"end chat", "close chat", "stop live chat", "exit live chat"}:
             LIVE_SUPPORT_CHATS.pop(chat_id, None)
 
@@ -2725,6 +2735,13 @@ def process_message(chat_id: str, user_text: str) -> str:
                     "Live Customer Service chat has been closed. 🙏\n\n"
                     "You can type MENU to return to the main menu."
                 ),
+            )
+
+        if contains_blocked_word(text):
+            return finish_reply(
+                chat_id,
+                text,
+                "Please keep the conversation respectful. Your message was not sent to Customer Service.",
             )
 
         sent_to_support = forward_customer_message_to_support(chat_id, text)
@@ -2739,6 +2756,22 @@ def process_message(chat_id: str, user_text: str) -> str:
                 ),
             )
 
+    if is_reset_request(text):
+        reset_history(chat_id)
+        PENDING_HANDOFFS.pop(chat_id, None)
+        LIVE_SUPPORT_CHATS.pop(chat_id, None)
+        clear_flow(chat_id)
+        set_flow(chat_id, "main_menu")
+
+        return finish_reply(chat_id, text, main_menu_text())
+
+    # CUSTOMER SERVICE SHORTCUT
+    # User can ask for customer service anytime, in any supported language,
+    # even while they are inside another flow like trial booking, schedule, or member help.
+    if is_customer_service_request(text):
+        reply = start_customer_service_flow(chat_id, text)
+        return finish_reply(chat_id, text, reply)
+    
     stage = get_flow_stage(chat_id)
 
     if stage.startswith("member_"):
