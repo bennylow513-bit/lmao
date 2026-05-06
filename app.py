@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request
 from openai import OpenAI
 
 load_dotenv()
@@ -50,6 +50,7 @@ FLOW_STATE: Dict[str, Dict[str, str]] = {}
 INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 USER_LANGUAGE: Dict[str, str] = {}
 LIVE_SUPPORT_CHATS: Dict[str, Dict[str, str]] = {}
+SUPPORT_ACTIVE_CUSTOMER: Dict[str, str] = {}
 
 INACTIVITY_WARNING_SECONDS = 600
 INACTIVITY_CLOSE_SECONDS = 1200
@@ -120,6 +121,8 @@ SENSITIVE_KEYWORDS = [
     "bank number",
 ]
 
+# Words that should never be sent through the live Customer Service chat.
+# Add more words here if needed.
 BLOCKED_WORDS = [
     "nigger",
     "nigga",
@@ -1393,20 +1396,127 @@ def open_live_support_chat(customer_chat_id: str, target_chat_id: str, outlet: s
     if not target_chat_id:
         return
 
-    LIVE_SUPPORT_CHATS[str(customer_chat_id)] = {
-        "target_chat_id": str(target_chat_id),
+    customer_chat_id = str(customer_chat_id)
+    target_chat_id = str(target_chat_id)
+
+    LIVE_SUPPORT_CHATS[customer_chat_id] = {
+        "target_chat_id": target_chat_id,
         "outlet": outlet or "Not specified",
         "last_active_at": now_sg(),
     }
 
+    # Make this customer the active customer for this Customer Service chat.
+    # This allows Customer Service to just type normally to reply.
+    SUPPORT_ACTIVE_CUSTOMER[target_chat_id] = customer_chat_id
+
 
 def support_reply_instructions(customer_chat_id: str) -> str:
     return (
-        "To reply to this customer, type:\n"
-        f"/reply {customer_chat_id} your message\n\n"
-        "To close the live chat, type:\n"
-        f"/close {customer_chat_id}"
+        "Easy reply for this customer:\n"
+        "Just type your message normally here, and I’ll send it to this customer.\n\n"
+        "If there are many customers at the same time:\n"
+        "Reply directly to this Telegram message so I know which customer you mean.\n\n"
+        "Example reply:\n"
+        "Hi, this is Jal Yoga Customer Service. How can I help?\n\n"
+        "To close this customer's chat, type:\n"
+        "close\n\n"
+        "Backup command:\n"
+        f"/reply {customer_chat_id} your message"
     )
+
+
+def extract_customer_chat_id_from_support_text(text: str) -> str:
+    patterns = [
+        r"Customer Telegram Chat ID:\s*([-\d]+)",
+        r"Referrer Telegram Chat ID:\s*([-\d]+)",
+        r"/reply\s+([-\d]+)",
+        r"/close\s+([-\d]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text or "", flags=re.IGNORECASE)
+
+        if match:
+            return match.group(1).strip()
+
+    return ""
+
+
+def close_live_support_chat(customer_chat_id: str) -> None:
+    customer_chat_id = str(customer_chat_id)
+    live_chat = LIVE_SUPPORT_CHATS.pop(customer_chat_id, {})
+    target_chat_id = str(live_chat.get("target_chat_id", ""))
+
+    if target_chat_id and SUPPORT_ACTIVE_CUSTOMER.get(target_chat_id) == customer_chat_id:
+        SUPPORT_ACTIVE_CUSTOMER.pop(target_chat_id, None)
+
+
+def send_support_message_to_customer(support_chat_id: str, customer_chat_id: str, message: str) -> str:
+    customer_chat_id = str(customer_chat_id).strip()
+    clean_message = message.strip()
+
+    if not customer_chat_id or not clean_message:
+        return "Please provide the customer chat ID and message."
+
+    if contains_blocked_word(clean_message):
+        return "Message blocked. Please use professional Customer Service language."
+
+    send_telegram_message(
+        customer_chat_id,
+        (
+            "Jal Yoga Customer Service 🙏\n\n"
+            f"{clean_message}\n\n"
+            "You may reply here and our Customer Service team will receive your message."
+        ),
+    )
+
+    live_chat = LIVE_SUPPORT_CHATS.get(customer_chat_id, {})
+
+    open_live_support_chat(
+        customer_chat_id,
+        str(support_chat_id),
+        live_chat.get("outlet", "Customer Service"),
+    )
+
+    return f"Sent to customer {customer_chat_id}."
+
+
+def handle_customer_service_reply_to_message(chat_id: str, text: str, reply_to_text: str) -> str:
+    if not is_customer_service_chat(chat_id):
+        return ""
+
+    if not reply_to_text:
+        return ""
+
+    clean = text.strip()
+    lower = clean.lower()
+
+    if not clean:
+        return ""
+
+    # Let command handler handle these.
+    if lower.startswith("/reply") or lower.startswith("/close"):
+        return ""
+
+    customer_chat_id = extract_customer_chat_id_from_support_text(reply_to_text)
+
+    if not customer_chat_id:
+        return ""
+
+    if lower in {"close", "close chat", "done", "resolved", "end chat"}:
+        close_live_support_chat(customer_chat_id)
+
+        send_telegram_message(
+            customer_chat_id,
+            (
+                "Customer Service has closed this chat for now. 🙏\n\n"
+                "If you need help again, type CUSTOMER SERVICE anytime."
+            ),
+        )
+
+        return f"Closed live chat with customer {customer_chat_id}."
+
+    return send_support_message_to_customer(chat_id, customer_chat_id, clean)
 
 
 def handle_customer_service_command(chat_id: str, text: str) -> str:
@@ -1433,27 +1543,7 @@ def handle_customer_service_command(chat_id: str, text: str) -> str:
         if not customer_chat_id or not message:
             return "Please use this format:\n\n/reply CUSTOMER_CHAT_ID your message"
 
-        if contains_blocked_word(message):
-            return "Message blocked. Please use professional Customer Service language."
-
-        send_telegram_message(
-            customer_chat_id,
-            (
-                "Jal Yoga Customer Service 🙏\n\n"
-                f"{message}\n\n"
-                "You may reply here and our Customer Service team will receive your message."
-            ),
-        )
-
-        live_chat = LIVE_SUPPORT_CHATS.get(customer_chat_id, {})
-
-        open_live_support_chat(
-            customer_chat_id,
-            str(chat_id),
-            live_chat.get("outlet", "Customer Service"),
-        )
-
-        return f"Sent to customer {customer_chat_id}."
+        return send_support_message_to_customer(chat_id, customer_chat_id, message)
 
     if lower.startswith("/close"):
         if not is_customer_service_chat(chat_id):
@@ -1470,7 +1560,8 @@ def handle_customer_service_command(chat_id: str, text: str) -> str:
             )
 
         customer_chat_id = parts[1].strip()
-        LIVE_SUPPORT_CHATS.pop(customer_chat_id, None)
+        close_live_support_chat(customer_chat_id)
+        SUPPORT_ACTIVE_CUSTOMER.pop(str(chat_id), None)
 
         send_telegram_message(
             customer_chat_id,
@@ -1483,6 +1574,71 @@ def handle_customer_service_command(chat_id: str, text: str) -> str:
         return f"Closed live chat with customer {customer_chat_id}."
 
     return ""
+
+
+def handle_support_active_reply(chat_id: str, text: str) -> str:
+    """Allow Customer Service to reply by just typing normally.
+
+    The bot remembers the latest/active customer for each Customer Service chat.
+    This is easier than typing /reply CUSTOMER_CHAT_ID message every time.
+    """
+    if not is_customer_service_chat(chat_id):
+        return ""
+
+    clean = text.strip()
+    lower = clean.lower()
+
+    if not clean:
+        return ""
+
+    # Let command handler handle these.
+    if lower.startswith("/reply") or lower.startswith("/close"):
+        return ""
+
+    customer_chat_id = SUPPORT_ACTIVE_CUSTOMER.get(str(chat_id), "")
+
+    if not customer_chat_id:
+        return (
+            "No active customer selected yet.\n\n"
+            "Please wait for a handoff message, or use:\n"
+            "/reply CUSTOMER_CHAT_ID your message"
+        )
+
+    if lower in {"close", "close chat", "done", "resolved", "end chat"}:
+        close_live_support_chat(customer_chat_id)
+        SUPPORT_ACTIVE_CUSTOMER.pop(str(chat_id), None)
+
+        send_telegram_message(
+            customer_chat_id,
+            (
+                "Customer Service has closed this chat for now. 🙏\n\n"
+                "If you need help again, type CUSTOMER SERVICE anytime."
+            ),
+        )
+
+        return f"Closed live chat with customer {customer_chat_id}."
+
+    if contains_blocked_word(clean):
+        return "Message blocked. Please use professional Customer Service language."
+
+    send_telegram_message(
+        customer_chat_id,
+        (
+            "Jal Yoga Customer Service 🙏\n\n"
+            f"{clean}\n\n"
+            "You may reply here and our Customer Service team will receive your message."
+        ),
+    )
+
+    live_chat = LIVE_SUPPORT_CHATS.get(customer_chat_id, {})
+
+    open_live_support_chat(
+        customer_chat_id,
+        str(chat_id),
+        live_chat.get("outlet", "Customer Service"),
+    )
+
+    return f"Sent to customer {customer_chat_id}."
 
 
 def forward_customer_message_to_support(customer_chat_id: str, text: str) -> bool:
@@ -1505,8 +1661,10 @@ def forward_customer_message_to_support(customer_chat_id: str, text: str) -> boo
         "Customer replied in live chat 🙏\n\n"
         f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
         f"Message:\n{text}\n\n"
-        f"Reply using:\n/reply {customer_chat_id} your message\n\n"
-        f"Close chat using:\n/close {customer_chat_id}"
+        "Easy reply:\n"
+        "Just type your message normally here, and I’ll send it to this customer.\n\n"
+        f"Backup command:\n/reply {customer_chat_id} your message\n\n"
+        f"Close chat:\n/close {customer_chat_id}"
     )
 
     send_telegram_message(target_chat_id, message)
@@ -2643,7 +2801,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         PENDING_HANDOFFS.pop(chat_id, None)
         TRIAL_BOOKINGS.pop(chat_id, None)
         clear_flow(chat_id)
-        LIVE_SUPPORT_CHATS.pop(chat_id, None)
+        close_live_support_chat(chat_id)
         clear_inactivity_state(chat_id)
 
         return (
@@ -2656,7 +2814,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         save_opt_out_users()
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
-        LIVE_SUPPORT_CHATS.pop(chat_id, None)
+        close_live_support_chat(chat_id)
         set_flow(chat_id, "main_menu")
         mark_chat_active(chat_id)
 
@@ -2665,12 +2823,20 @@ def process_message(chat_id: str, user_text: str) -> str:
     if chat_id in OPT_OUT_USERS:
         return "You have opted out. Reply START if you want to chat with Jal Yoga again."
 
-        mark_chat_active(chat_id)
+    mark_chat_active(chat_id)
 
+    # Customer Service account commands, e.g. /reply and /close.
     customer_service_command_reply = handle_customer_service_command(chat_id, text)
 
     if customer_service_command_reply:
         return finish_reply(chat_id, text, customer_service_command_reply, add_menu=False)
+
+    # Easy Customer Service reply mode.
+    # After a handoff, Customer Service can just type normally to reply to the active customer.
+    support_active_reply = handle_support_active_reply(chat_id, text)
+
+    if support_active_reply:
+        return finish_reply(chat_id, text, support_active_reply, add_menu=False)
 
     language_switch = detect_language_switch_request(text)
 
@@ -2711,13 +2877,12 @@ def process_message(chat_id: str, user_text: str) -> str:
             ),
         )
 
-    # LIVE CUSTOMER SERVICE CHAT HAS PRIORITY
-    # If the customer is already connected to Customer Service, normal messages
-    # should go to Customer Service instead of restarting the bot.
-    # Only MENU / START / RESTART exits live chat and returns to the main menu.
+    # LIVE CUSTOMER SERVICE CHAT HAS PRIORITY.
+    # If the customer is connected to Customer Service, normal messages should go to support,
+    # instead of resetting the bot when they type words like hi/hello.
     if chat_id in LIVE_SUPPORT_CHATS:
         if norm in {"menu", "main menu", "restart", "start", "/start", "home"}:
-            LIVE_SUPPORT_CHATS.pop(chat_id, None)
+            close_live_support_chat(chat_id)
             reset_history(chat_id)
             PENDING_HANDOFFS.pop(chat_id, None)
             clear_flow(chat_id)
@@ -2726,7 +2891,7 @@ def process_message(chat_id: str, user_text: str) -> str:
             return finish_reply(chat_id, text, main_menu_text())
 
         if norm in {"end chat", "close chat", "stop live chat", "exit live chat"}:
-            LIVE_SUPPORT_CHATS.pop(chat_id, None)
+            close_live_support_chat(chat_id)
 
             return finish_reply(
                 chat_id,
@@ -2759,19 +2924,19 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_reset_request(text):
         reset_history(chat_id)
         PENDING_HANDOFFS.pop(chat_id, None)
-        LIVE_SUPPORT_CHATS.pop(chat_id, None)
+        close_live_support_chat(chat_id)
         clear_flow(chat_id)
         set_flow(chat_id, "main_menu")
 
         return finish_reply(chat_id, text, main_menu_text())
 
-    # CUSTOMER SERVICE SHORTCUT
+    # CUSTOMER SERVICE SHORTCUT.
     # User can ask for customer service anytime, in any supported language,
     # even while they are inside another flow like trial booking, schedule, or member help.
     if is_customer_service_request(text):
         reply = start_customer_service_flow(chat_id, text)
         return finish_reply(chat_id, text, reply)
-    
+
     stage = get_flow_stage(chat_id)
 
     if stage.startswith("member_"):
@@ -2947,13 +3112,21 @@ def process_message(chat_id: str, user_text: str) -> str:
     return finish_reply(chat_id, text, final_reply)
 
 
+
 # =========================
 # FLASK ROUTES
 # =========================
 
 @app.route("/", methods=["GET"])
 def home():
-    return render_template("index.html")
+    return jsonify(
+        {
+            "status": "ok",
+            "message": "Jal Yoga Telegram bot server is running.",
+            "telegram_webhook": "/telegram/webhook",
+            "health": "/health",
+        }
+    )
 
 
 @app.route("/health", methods=["GET"])
@@ -3078,6 +3251,19 @@ def telegram_webhook():
         return jsonify({"status": "ok"}), 200
 
     try:
+        reply_to_message = message.get("reply_to_message") or {}
+        reply_to_text = reply_to_message.get("text", "")
+
+        customer_service_reply = handle_customer_service_reply_to_message(
+            chat_id,
+            text,
+            reply_to_text,
+        )
+
+        if customer_service_reply:
+            send_telegram_message(chat_id, customer_service_reply)
+            return jsonify({"status": "ok"}), 200
+
         reply = process_message(chat_id, text)
         reply = translate_reply_if_needed(chat_id, text, reply)
 
