@@ -6,7 +6,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 import requests
@@ -29,6 +29,7 @@ TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
 
 CUSTOMER_SERVICE_WHATSAPP_NUMBER = os.getenv("CUSTOMER_SERVICE_WHATSAPP_NUMBER", "")
 CUSTOMER_SERVICE_TELEGRAM_CHAT_ID = os.getenv("CUSTOMER_SERVICE_TELEGRAM_CHAT_ID", "")
+DEBUG_ROUTE_TOKEN = os.getenv("DEBUG_ROUTE_TOKEN", "")
 
 PORT = int(os.getenv("PORT", "5000"))
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
@@ -267,6 +268,10 @@ if not STUDIOS:
     ]
 
 
+NEAREST_OUTLET_AREA_RULES: List[Dict[str, str]] = []
+NEAREST_OUTLET_POSTAL_RULES: Dict[str, str] = {}
+
+
 def studio_names() -> List[str]:
     return [studio["name"] for studio in STUDIOS]
 
@@ -382,6 +387,335 @@ def get_studio_address(outlet_name: str) -> str:
         (studio["address"] for studio in STUDIOS if studio["name"].lower() == outlet_name.lower()),
         "",
     )
+
+
+def get_flow_outlet(chat_id: str) -> str:
+    flow = get_flow(chat_id)
+    return flow.get("outlet", "") or flow.get("recommended_outlet", "")
+
+
+def clean_location_candidate(text: str) -> str:
+    candidate = normalize(text)
+    candidate = re.sub(r"https?://\S+", " ", candidate)
+    candidate = re.sub(r"\b(singapore|sg)\b", " ", candidate)
+    candidate = re.sub(
+        r"\b(nearest|closest|nearer|closer|nearby|outlet|outlets|studio|studios|branch|branches|"
+        r"jal yoga|recommend|recommended|suggest|pick|choose|which|what|where|"
+        r"is|are|the|to|from|around|near|at|in|my|me|current|location|locate|"
+        r"help|find|based|on|please|pls|can|you|i|im|i'm|stay|staying|live|"
+        r"living|am|for|would|like)\b",
+        " ",
+        candidate,
+    )
+    candidate = re.sub(r"[^a-z0-9\s]", " ", candidate)
+    return " ".join(candidate.split())
+
+
+def location_candidates_from_text(text: str) -> List[str]:
+    norm = normalize(text)
+    candidates: List[str] = []
+    postal_match = re.search(r"\b\d{6}\b", norm)
+
+    if postal_match:
+        candidates.append(postal_match.group(0))
+
+    patterns = [
+        r"(?:nearest|closest|nearer|closer|nearby).*(?:to|from|at|in|around|near)\s+(.+)$",
+        r"(?:i am|i'm|im|i stay|i'm staying|im staying|i live|i'm living|im living)\s+(?:at|in|near|around)?\s*(.+)$",
+        r"(?:my location is|location is|address is|i am at|i'm at|im at)\s+(.+)$",
+        r"(?:near|around|at|in|from)\s+(.+)$",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, norm, flags=re.IGNORECASE)
+
+        if match:
+            candidate = clean_location_candidate(match.group(1))
+
+            if candidate:
+                candidates.append(candidate)
+
+    fallback = clean_location_candidate(norm)
+
+    if fallback:
+        candidates.append(fallback)
+
+    unique_candidates: List[str] = []
+
+    for candidate in candidates:
+        if candidate and candidate not in unique_candidates:
+            unique_candidates.append(candidate)
+
+    return unique_candidates
+
+
+def clean_area_label(label: str) -> str:
+    label = re.sub(r"\bnearby\b", "", label, flags=re.IGNORECASE)
+    label = re.sub(r"\bareas?\b", "", label, flags=re.IGNORECASE)
+    label = re.sub(r"\s+", " ", label)
+    return label.strip(" .")
+
+
+def split_area_labels(area_text: str) -> List[str]:
+    cleaned = area_text.strip().rstrip(".")
+    cleaned = re.sub(r"\s+and\s+", ", ", cleaned, flags=re.IGNORECASE)
+    labels = []
+
+    for raw_group in cleaned.split(","):
+        for raw_label in raw_group.split("/"):
+            label = clean_area_label(raw_label)
+
+            if label:
+                labels.append(label)
+
+    return labels
+
+
+def expand_postal_prefixes(prefix_text: str) -> List[str]:
+    prefixes: List[str] = []
+
+    for raw_token in prefix_text.split(","):
+        token = raw_token.strip()
+        range_match = re.fullmatch(r"(\d{2})\s*-\s*(\d{2})", token)
+
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2))
+
+            if start <= end:
+                prefixes.extend(f"{number:02d}" for number in range(start, end + 1))
+
+            continue
+
+        if re.fullmatch(r"\d{2}", token):
+            prefixes.append(token)
+
+    return prefixes
+
+
+def parse_nearest_outlet_area_rules(text: str) -> List[Dict[str, str]]:
+    rules: List[Dict[str, str]] = []
+    inside = False
+
+    for line in text.splitlines():
+        clean = line.strip()
+        lower = clean.lower()
+
+        if lower.startswith("nearest outlet guide:"):
+            inside = True
+            continue
+
+        if inside and not clean and rules:
+            break
+
+        if not inside or not clean.startswith("- "):
+            continue
+
+        match = re.match(r"^- (?P<outlet>.+?) is usually best for (?P<areas>.+)$", clean)
+
+        if not match:
+            continue
+
+        outlet = detect_outlet_from_text(match.group("outlet"))
+
+        if not outlet:
+            continue
+
+        for label in split_area_labels(match.group("areas")):
+            key = simple_text(label)
+
+            if key:
+                rules.append({"outlet": outlet, "label": label, "key": key})
+
+    return rules
+
+
+def parse_nearest_outlet_postal_rules(text: str) -> Dict[str, str]:
+    rules: Dict[str, str] = {}
+    inside = False
+
+    for line in text.splitlines():
+        clean = line.strip()
+        lower = clean.lower()
+
+        if lower.startswith("nearest outlet postal prefix guide:"):
+            inside = True
+            continue
+
+        if inside and not clean and rules:
+            break
+
+        if not inside or not clean.startswith("- ") or ":" not in clean:
+            continue
+
+        outlet_text, prefix_text = clean[2:].split(":", 1)
+        outlet = detect_outlet_from_text(outlet_text)
+
+        if not outlet:
+            continue
+
+        for prefix in expand_postal_prefixes(prefix_text):
+            rules[prefix] = outlet
+
+    return rules
+
+
+NEAREST_OUTLET_AREA_RULES = parse_nearest_outlet_area_rules(KNOWLEDGE_TEXT)
+NEAREST_OUTLET_POSTAL_RULES = parse_nearest_outlet_postal_rules(KNOWLEDGE_TEXT)
+
+
+def text_chunks(clean: str, max_size: int = 4) -> List[str]:
+    words = clean.split()
+    chunks = []
+
+    for size in range(1, min(max_size, len(words)) + 1):
+        for index in range(len(words) - size + 1):
+            chunks.append(" ".join(words[index:index + size]))
+
+    return chunks
+
+
+def area_location_match(text: str) -> Optional[Dict[str, str]]:
+    clean = simple_text(text)
+
+    if not clean:
+        return None
+
+    padded = f" {clean} "
+    chunks = text_chunks(clean)
+    best_rule: Optional[Dict[str, str]] = None
+    best_score = 0.0
+
+    for rule in NEAREST_OUTLET_AREA_RULES:
+        key = rule.get("key", "")
+
+        if not key:
+            continue
+
+        score = 0.0
+
+        if clean == key or f" {key} " in padded:
+            score = 1.0 + (len(key) / 1000)
+        elif len(key) >= 5:
+            score = max((SequenceMatcher(None, chunk, key).ratio() for chunk in chunks), default=0.0)
+
+            if score < 0.88:
+                score = 0.0
+
+        if score > best_score:
+            best_score = score
+            best_rule = rule
+
+    if not best_rule:
+        return None
+
+    return {
+        "label": best_rule["label"],
+        "outlet": best_rule["outlet"],
+        "source": "knowledge_area",
+    }
+
+
+def postal_location_match(text: str) -> Optional[Dict[str, str]]:
+    match = re.search(r"\b(\d{2})\d{4}\b", text)
+
+    if not match:
+        return None
+
+    prefix = match.group(1)
+    outlet = NEAREST_OUTLET_POSTAL_RULES.get(prefix)
+
+    if not outlet:
+        return None
+
+    return {
+        "label": f"Singapore {match.group(0)}",
+        "outlet": outlet,
+        "source": "knowledge_postal_prefix",
+    }
+
+
+def resolve_user_location(text: str) -> Optional[Dict[str, str]]:
+    candidates = location_candidates_from_text(text)
+
+    for candidate in candidates:
+        resolved = postal_location_match(candidate)
+
+        if resolved:
+            return resolved
+
+    for candidate in candidates:
+        resolved = area_location_match(candidate)
+
+        if resolved:
+            return resolved
+
+    return None
+
+
+def nearest_outlet_recommendation(text: str) -> Optional[Dict[str, Any]]:
+    location = resolve_user_location(text)
+
+    if not location:
+        return None
+
+    outlet = location.get("outlet", "")
+
+    if not outlet:
+        return None
+
+    return {
+        "location": location,
+        "ranked_studios": [
+            {
+                "name": outlet,
+                "address": get_studio_address(outlet),
+            }
+        ],
+    }
+
+
+def is_nearest_outlet_request(text: str) -> bool:
+    clean = simple_text(text)
+
+    if not clean:
+        return False
+
+    has_outlet_context = any(
+        word in clean
+        for word in [
+            "outlet",
+            "outlets",
+            "studio",
+            "studios",
+            "branch",
+            "branches",
+            "jal yoga",
+            "trial",
+            "trail",
+            "class",
+        ]
+    )
+
+    if any(word in clean for word in ["nearest", "closest", "nearer", "closer", "nearby"]) and has_outlet_context:
+        return True
+
+    if re.search(r"\b(outlet|outlets|studio|studios|branch|branches)\b.*\b(near|around)\b", clean):
+        return True
+
+    if re.search(r"\b(near|around)\b.*\b(outlet|outlets|studio|studios|branch|branches)\b", clean):
+        return True
+
+    if "near me" in clean and has_outlet_context:
+        return True
+
+    if any(word in clean for word in ["recommend", "suggest", "pick", "choose"]) and has_outlet_context:
+        return True
+
+    if has_outlet_context and any(phrase in clean for phrase in ["should i go", "should i visit", "which one"]):
+        return True
+
+    return False
 
 
 # CONTACT CONFIG
@@ -1104,7 +1438,7 @@ def ask_outlet_before_handoff_text() -> str:
 
 
 def trial_outlet_question() -> str:
-    return studio_prompt("Which studio would you prefer?")
+    return studio_prompt("Which studio would you prefer? You can also type your location or postal code and I will suggest the nearest outlet.")
 
 
 def trial_start_text() -> str:
@@ -1116,6 +1450,60 @@ def trial_start_text() -> str:
 
 def trial_change_outlet_question() -> str:
     return studio_prompt("Which studio would you like to change the trial booking to?")
+
+
+def nearest_outlet_location_question() -> str:
+    return (
+        "Sure, please type your location, postal code, MRT station, or area in Singapore, "
+        "and I will suggest the nearest Jal Yoga outlet."
+    )
+
+
+def nearest_outlet_action_prompt(outlet: str) -> str:
+    return (
+        "Would you like to:\n"
+        f"1. Schedule a trial class at {outlet}\n"
+        f"2. Book a regular class at {outlet}"
+    )
+
+
+def format_nearest_outlet_reply(recommendation: Dict[str, Any]) -> str:
+    location = recommendation["location"]
+    top = recommendation["ranked_studios"][0]
+    outlet = top["name"]
+
+    lines = [
+        (
+            f"Based on {location['label']}, the nearest Jal Yoga outlet is likely "
+            f"{outlet}."
+        ),
+        "",
+        "Address:",
+        top["address"],
+    ]
+
+    lines.extend(["", nearest_outlet_action_prompt(outlet)])
+    return "\n".join(lines)
+
+
+def format_trial_nearest_outlet_reply(recommendation: Dict[str, Any]) -> str:
+    location = recommendation["location"]
+    top = recommendation["ranked_studios"][0]
+    outlet = top["name"]
+
+    return (
+        f"Based on {location['label']}, {outlet} looks nearest. "
+        f"I will use {outlet} for your trial.\n\n"
+        "May I have your full name?"
+    )
+
+
+def regular_class_booking_guidance(outlet: str) -> str:
+    return (
+        f"For regular classes at {outlet}, please book through the Jal Yoga App up to 3 days in advance.\n\n"
+        "If you are new, I recommend starting with a trial class first.\n\n"
+        "Reply 1 and I will schedule a trial here, or type CUSTOMER SERVICE if you need help with a booking."
+    )
 
 
 def friend_studio_question() -> str:
@@ -1188,6 +1576,8 @@ FLOW_QUESTION_BUILDERS.update(
         "trial_name": lambda _flow: "May I have your full name?",
         "trial_goal": trial_goal_question,
         "trial_change_outlet": lambda _flow: trial_change_outlet_question(),
+        "nearest_outlet_location": lambda _flow: nearest_outlet_location_question(),
+        "nearest_outlet_action": lambda flow: nearest_outlet_action_prompt(flow.get("recommended_outlet", "the recommended outlet")),
         "refer_friend_name": lambda _flow: "That’s wonderful — what is your friend’s full name?",
         "refer_friend_contact": lambda _flow: "Thanks — what is your friend’s contact number?",
         "refer_friend_studio": lambda _flow: friend_studio_question(),
@@ -1290,7 +1680,7 @@ GENERAL_ENQUIRY_KNOWLEDGE_CHOICES = {
 
 
 def start_customer_service_flow(chat_id: str, text: str) -> str:
-    outlet = detect_outlet_choice(text)
+    outlet = detect_outlet_choice(text) or get_flow_outlet(chat_id)
     clean_answer = customer_service_summary("Customer Service Request", outlet, text)
 
     if not outlet:
@@ -2194,7 +2584,7 @@ def inactivity_checker_loop() -> None:
                     clear_inactivity_state(chat_id)
                     continue
 
-                idle_seconds = now - float(state.get("last_user_at", now))
+                idle_seconds = now - float(str(state.get("last_user_at", now)))
                 warning_sent = bool(state.get("warning_sent", False))
 
                 if not warning_sent and idle_seconds >= INACTIVITY_WARNING_SECONDS:
@@ -2273,7 +2663,7 @@ def handle_current_member_choice(chat_id: str, text: str) -> str:
 
 def handle_member_service_flow(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
-    outlet = detect_outlet_choice(text)
+    outlet = detect_outlet_choice(text) or get_flow_outlet(chat_id)
 
     service_stage = MEMBER_SERVICE_STAGES.get(stage)
 
@@ -2343,6 +2733,108 @@ def handle_contact_outlet_flow(chat_id: str, text: str) -> str:
     return handle_outlet_choice_flow(chat_id, text, build_outlet_contact_reply)
 
 
+def store_nearest_outlet_action(chat_id: str, recommendation: Dict[str, Any]) -> None:
+    top = recommendation["ranked_studios"][0]
+    set_flow(
+        chat_id,
+        "nearest_outlet_action",
+        recommended_outlet=top["name"],
+        outlet=top["name"],
+        location_label=str(recommendation["location"]["label"]),
+    )
+
+
+def handle_nearest_outlet_request(chat_id: str, text: str) -> str:
+    recommendation = nearest_outlet_recommendation(text)
+
+    if not recommendation:
+        set_flow(chat_id, "nearest_outlet_location")
+        return nearest_outlet_location_question()
+
+    store_nearest_outlet_action(chat_id, recommendation)
+    return format_nearest_outlet_reply(recommendation)
+
+
+def handle_nearest_outlet_location_flow(chat_id: str, text: str) -> str:
+    recommendation = nearest_outlet_recommendation(text)
+
+    if not recommendation:
+        return (
+            "Sorry, I could not recognise that location. Please type a Singapore postal code, "
+            "MRT station, mall, or area, for example Tampines, Serangoon, or 520123."
+        )
+
+    store_nearest_outlet_action(chat_id, recommendation)
+    return format_nearest_outlet_reply(recommendation)
+
+
+def wants_trial_from_nearest_action(text: str) -> bool:
+    clean = simple_text(text)
+
+    return (
+        clean in {"1", "trial", "trial class", "trail", "trail class", "triel", "free trial"}
+        or "trial" in clean
+        or "trail" in clean
+        or "triel" in clean
+    )
+
+
+def wants_regular_class_booking(text: str) -> bool:
+    clean = simple_text(text)
+
+    return (
+        clean in {"2", "book", "booking", "book class", "book a class", "regular class", "class"}
+        or ("book" in clean and "class" in clean)
+        or ("booking" in clean and "class" in clean)
+    )
+
+
+def handle_nearest_outlet_action_flow(chat_id: str, text: str) -> str:
+    flow = get_flow(chat_id)
+    outlet = flow.get("recommended_outlet", "") or flow.get("outlet", "")
+
+    if not outlet:
+        set_flow(chat_id, "nearest_outlet_location")
+        return nearest_outlet_location_question()
+
+    if wants_trial_from_nearest_action(text):
+        return next_flow_reply(
+            chat_id,
+            "trial_name",
+            f"Great - let's schedule your trial class at {outlet}.\n\nMay I have your full name?",
+            outlet=outlet,
+        )
+
+    if wants_regular_class_booking(text):
+        return regular_class_booking_guidance(outlet)
+
+    if is_nearest_outlet_request(text):
+        return handle_nearest_outlet_request(chat_id, text)
+
+    recommendation = nearest_outlet_recommendation(text)
+
+    if recommendation:
+        store_nearest_outlet_action(chat_id, recommendation)
+        return format_nearest_outlet_reply(recommendation)
+
+    chosen_outlet = detect_outlet_choice(text)
+
+    if chosen_outlet:
+        set_flow(
+            chat_id,
+            "nearest_outlet_action",
+            recommended_outlet=chosen_outlet,
+            outlet=chosen_outlet,
+            location_label=flow.get("location_label", ""),
+        )
+        return (
+            f"Got it - {chosen_outlet}.\n\n"
+            f"{nearest_outlet_action_prompt(chosen_outlet)}"
+        )
+
+    return nearest_outlet_action_prompt(outlet)
+
+
 # FLOW HANDLERS
 
 def handle_trial_flow(chat_id: str, text: str) -> str:
@@ -2351,6 +2843,19 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
 
     if stage == "trial_outlet":
         outlet = detect_outlet_choice(text)
+
+        if not outlet:
+            recommendation = nearest_outlet_recommendation(text)
+
+            if recommendation:
+                top = recommendation["ranked_studios"][0]
+                outlet = top["name"]
+                return next_flow_reply(
+                    chat_id,
+                    "trial_name",
+                    format_trial_nearest_outlet_reply(recommendation),
+                    outlet=outlet,
+                )
 
         if not outlet:
             return trial_outlet_question()
@@ -2720,12 +3225,21 @@ def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
 def handle_active_flow_stage(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
 
+    if (
+        is_nearest_outlet_request(text)
+        and stage not in {"nearest_outlet_location", "nearest_outlet_action"}
+        and not stage.startswith("trial_")
+    ):
+        return handle_nearest_outlet_request(chat_id, text)
+
     if stage.startswith("member_"):
         return handle_member_service_flow(chat_id, text)
 
     stage_handlers = {
         "schedule_outlet": handle_schedule_outlet_flow,
         "contact_outlet": handle_contact_outlet_flow,
+        "nearest_outlet_location": handle_nearest_outlet_location_flow,
+        "nearest_outlet_action": handle_nearest_outlet_action_flow,
         "pending_handoff_outlet": handle_pending_handoff_outlet,
         "main_menu": handle_main_menu_choice,
         "current_member_menu": handle_current_member_choice,
@@ -2892,6 +3406,10 @@ def process_message(chat_id: str, user_text: str) -> str:
     if flow_reply:
         return finish_reply(chat_id, text, flow_reply)
 
+    if is_nearest_outlet_request(text):
+        reply = handle_nearest_outlet_request(chat_id, text)
+        return finish_reply(chat_id, text, reply)
+
     if is_schedule_request(text):
         requested_outlet = detect_outlet_choice(text)
 
@@ -2998,8 +3516,28 @@ def health():
     )
 
 
+def debug_routes_enabled() -> bool:
+    if os.getenv("FLASK_DEBUG", "false").lower() == "true":
+        return True
+
+    supplied_token = request.headers.get("X-Debug-Token", "") or request.args.get("token", "")
+    return bool(DEBUG_ROUTE_TOKEN and supplied_token == DEBUG_ROUTE_TOKEN)
+
+
+def require_debug_route_access():
+    if debug_routes_enabled():
+        return None
+
+    return jsonify({"status": "forbidden"}), 403
+
+
 @app.route("/debug/outlets", methods=["GET"])
 def debug_outlets():
+    forbidden = require_debug_route_access()
+
+    if forbidden:
+        return forbidden
+
     outlet_data = {}
 
     for studio in STUDIOS:
@@ -3024,11 +3562,21 @@ def debug_outlets():
 
 @app.route("/debug/schedule", methods=["GET"])
 def debug_schedule():
+    forbidden = require_debug_route_access()
+
+    if forbidden:
+        return forbidden
+
     return jsonify(load_schedule_data())
 
 
 @app.route("/debug/trial-bookings", methods=["GET"])
 def debug_trial_bookings():
+    forbidden = require_debug_route_access()
+
+    if forbidden:
+        return forbidden
+
     return jsonify(
         {
             "status": "ok",
