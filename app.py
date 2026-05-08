@@ -718,6 +718,31 @@ def is_nearest_outlet_request(text: str) -> bool:
     return False
 
 
+def is_all_outlets_request(text: str) -> bool:
+    clean = simple_text(text)
+
+    if not clean or is_nearest_outlet_request(text):
+        return False
+
+    if any(word in clean for word in ["contact", "phone", "whatsapp", "call", "hotline"]):
+        return False
+
+    outlet_words = r"(outlet|outlets|studio|studios|branch|branches|location|locations)"
+
+    patterns = [
+        rf"\b(how many|number of)\b.*\b{outlet_words}\b",
+        rf"\b(list|show|share|send|see)\b.*\b(all )?{outlet_words}\b",
+        rf"\ball\b.*\b{outlet_words}\b",
+        rf"\b(studio locations|outlet locations)\b",
+        rf"\b(what|which|where)\b.*\b{outlet_words}\b.*\b(have|available|are|located)\b",
+    ]
+
+    if clean in {"outlet", "outlets", "studio", "studios", "locations", "studio locations", "outlet locations"}:
+        return True
+
+    return any(re.search(pattern, clean, flags=re.IGNORECASE) for pattern in patterns)
+
+
 # CONTACT CONFIG
 
 def env_key_for_outlet(outlet_name: str, suffix: str) -> str:
@@ -2793,6 +2818,10 @@ def handle_nearest_outlet_action_flow(chat_id: str, text: str) -> str:
     flow = get_flow(chat_id)
     outlet = flow.get("recommended_outlet", "") or flow.get("outlet", "")
 
+    if is_all_outlets_request(text):
+        clear_flow(chat_id)
+        return studio_locations_text()
+
     if not outlet:
         set_flow(chat_id, "nearest_outlet_location")
         return nearest_outlet_location_question()
@@ -3225,6 +3254,10 @@ def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
 def handle_active_flow_stage(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
 
+    if is_all_outlets_request(text):
+        clear_flow(chat_id)
+        return studio_locations_text()
+
     if (
         is_nearest_outlet_request(text)
         and stage not in {"nearest_outlet_location", "nearest_outlet_action"}
@@ -3409,6 +3442,10 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_nearest_outlet_request(text):
         reply = handle_nearest_outlet_request(chat_id, text)
         return finish_reply(chat_id, text, reply)
+
+    if is_all_outlets_request(text):
+        clear_flow(chat_id)
+        return finish_reply(chat_id, text, studio_locations_text())
 
     if is_schedule_request(text):
         requested_outlet = detect_outlet_choice(text)
