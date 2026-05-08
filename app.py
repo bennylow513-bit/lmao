@@ -536,12 +536,6 @@ def support_handoff_text(clean_answer: str) -> str:
     while lines and not lines[0].strip():
         lines.pop(0)
 
-    if lines and lines[0].strip().replace("\u2019", "'") == "I'll pass this to our Customer Service team.":
-        lines.pop(0)
-
-        while lines and not lines[0].strip():
-            lines.pop(0)
-
     return "\n".join(lines).strip()
 
 
@@ -1120,6 +1114,10 @@ def trial_start_text() -> str:
     )
 
 
+def trial_change_outlet_question() -> str:
+    return studio_prompt("Which studio would you like to change the trial booking to?")
+
+
 def friend_studio_question() -> str:
     return studio_prompt("Which studio would your friend prefer?")
 
@@ -1189,6 +1187,7 @@ FLOW_QUESTION_BUILDERS.update(
         "trial_outlet": lambda _flow: trial_outlet_question(),
         "trial_name": lambda _flow: "May I have your full name?",
         "trial_goal": trial_goal_question,
+        "trial_change_outlet": lambda _flow: trial_change_outlet_question(),
         "refer_friend_name": lambda _flow: "That’s wonderful — what is your friend’s full name?",
         "refer_friend_contact": lambda _flow: "Thanks — what is your friend’s contact number?",
         "refer_friend_studio": lambda _flow: friend_studio_question(),
@@ -1405,11 +1404,15 @@ def open_live_support_chat(customer_chat_id: str, target_chat_id: str, outlet: s
 
 def support_reply_instructions(customer_chat_id: str) -> str:
     return (
-        "Reply here to message this customer.\n"
-        "If handling multiple customers, reply directly to this Telegram message.\n\n"
-        "Close chat:\n"
+        "Easy reply for this customer:\n"
+        "Just type your message normally here, and I'll send it to this customer.\n\n"
+        "If there are many customers at the same time:\n"
+        "Reply directly to this Telegram message so I know which customer you mean.\n\n"
+        "Example reply:\n"
+        "Hi, this is Jal Yoga Customer Service. How can I help?\n\n"
+        "To close this customer's chat, type:\n"
         "close\n\n"
-        "Backup:\n"
+        "Backup command:\n"
         f"/reply {customer_chat_id} your message"
     )
 
@@ -1676,10 +1679,10 @@ def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answe
     handoff_text = support_handoff_text(clean_answer)
 
     message = (
-        "New CS Handoff 🙏\n\n"
+        "New Customer Service Handoff 🙏\n\n"
         f"{handoff_text}\n\n"
         f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
-        "Live chat connected.\n\n"
+        "This customer is now connected to live Customer Service chat.\n\n"
         f"{support_reply_instructions(customer_chat_id)}"
     )
 
@@ -1694,10 +1697,72 @@ def send_customer_service_handoff_to_telegram(customer_chat_id: str, clean_answe
 
 # TRIAL BOOKING
 
+TRIAL_OUTLET_CHANGE_WORDS = phrase_list(
+    "change|switch|move|transfer|instead|prefer|preferred|rather|chnage|chage"
+)
+TRIAL_OUTLET_CHANGE_CONTEXT_WORDS = phrase_list(
+    "trial|trail|triel|outlet|studio"
+)
+
+
+def is_trial_outlet_change_request(chat_id: str, text: str) -> bool:
+    has_trial_context = bool(TRIAL_BOOKINGS.get(chat_id)) or get_flow_stage(chat_id).startswith("trial_")
+
+    if not has_trial_context:
+        return False
+
+    clean = simple_text(text)
+
+    if not clean:
+        return False
+
+    has_change_word = any(word in clean for word in TRIAL_OUTLET_CHANGE_WORDS)
+    has_context_word = any(word in clean for word in TRIAL_OUTLET_CHANGE_CONTEXT_WORDS)
+    has_outlet = bool(detect_outlet_choice(text))
+
+    if has_outlet:
+        return has_change_word
+
+    return has_change_word and has_context_word
+
+
+def send_trial_change_notice_to_previous_outlet(
+    customer_chat_id: str,
+    previous_outlet: str,
+    new_outlet: str,
+    name: str,
+) -> None:
+    if not previous_outlet or previous_outlet == new_outlet:
+        return
+
+    previous_target_chat_id = outlet_telegram_chat_id(previous_outlet)
+
+    if not previous_target_chat_id:
+        return
+
+    message = (
+        "Trial Booking Outlet Changed\n\n"
+        f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
+        "Summary:\n"
+        f"- Previous Outlet: {previous_outlet}\n"
+        f"- New Outlet: {new_outlet}\n"
+        f"- Name: {name or 'Not provided'}\n\n"
+        "Please do not proceed with the previous outlet booking unless Customer Service confirms otherwise."
+    )
+
+    try:
+        send_telegram_message(previous_target_chat_id, message)
+    except Exception as e:
+        print("TRIAL BOOKING PREVIOUS OUTLET NOTICE ERROR:", str(e), flush=True)
+        traceback.print_exc()
+
+
 def send_trial_booking_to_outlet(customer_chat_id: str, booking: Dict[str, str]) -> bool:
     outlet = booking.get("outlet", "")
     name = booking.get("name", "")
     fitness_goal = booking.get("fitness_goal", "")
+    previous_outlet = booking.get("previous_outlet", "")
+    is_update = bool(previous_outlet and previous_outlet != outlet)
 
     if not outlet:
         return False
@@ -1708,24 +1773,153 @@ def send_trial_booking_to_outlet(customer_chat_id: str, booking: Dict[str, str])
         "fitness_goal": fitness_goal,
     }
 
+    title = "Updated Trial Booking Summary" if is_update else "New Trial Booking Summary"
+    outlet_lines = (
+        f"- Previous Outlet: {previous_outlet}\n"
+        f"- New Outlet: {outlet}\n"
+        if is_update
+        else f"- Outlet: {outlet}\n"
+    )
+    status_text = (
+        "This customer has changed their trial booking outlet.\n\n"
+        if is_update
+        else "This customer has submitted a trial booking request.\n\n"
+    )
+
     message = (
-        "New Trial Booking Received 🙏\n\n"
-        f"Outlet: {outlet}\n"
-        "Class: Trial Class\n"
-        f"Name: {name or 'Not provided'}\n"
-        f"Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
+        f"{title} 🙏\n\n"
+        "Summary:\n"
+        f"{outlet_lines}"
+        "- Class: Trial Class\n"
+        f"- Name: {name or 'Not provided'}\n"
+        f"- Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
         f"Customer Telegram Chat ID: {customer_chat_id}\n\n"
-        "Live chat connected.\n\n"
+        f"{status_text}"
         f"{support_reply_instructions(customer_chat_id)}"
     )
 
-    return send_outlet_support_notification(
+    target_chat_id = outlet_telegram_chat_id(outlet)
+
+    if not target_chat_id:
+        print("TRIAL BOOKING SEND SKIPPED: No outlet Telegram chat ID", flush=True)
+        return False
+
+    return send_support_notification(
         customer_chat_id,
+        target_chat_id,
         outlet,
         message,
-        "TRIAL BOOKING SEND SKIPPED",
         "TRIAL BOOKING SEND ERROR",
     )
+
+
+def update_active_trial_outlet(chat_id: str, outlet: str) -> str:
+    flow = get_flow(chat_id)
+    stage = get_flow_stage(chat_id)
+    data = {key: value for key, value in flow.items() if key != "stage"}
+    data["outlet"] = outlet
+
+    if stage == "trial_goal":
+        set_flow(chat_id, stage, **data)
+        return (
+            f"I've updated your preferred studio to {outlet}. 🙏\n\n"
+            f"{trial_goal_question(data)}"
+        )
+
+    set_flow(chat_id, "trial_name", outlet=outlet)
+    return (
+        f"I've updated your preferred studio to {outlet}. 🙏\n\n"
+        "May I have your full name?"
+    )
+
+
+def apply_completed_trial_outlet_change(chat_id: str, outlet: str) -> str:
+    booking = TRIAL_BOOKINGS.get(chat_id, {})
+    previous_outlet = booking.get("outlet", "")
+    name = booking.get("name", "")
+    fitness_goal = booking.get("fitness_goal", "")
+
+    if previous_outlet == outlet:
+        return (
+            "Your trial booking is already set to this outlet.\n\n"
+            "Is there anything else we can assist you with today?"
+        )
+
+    close_live_support_chat(chat_id)
+
+    updated_booking = {
+        "outlet": outlet,
+        "name": name,
+        "fitness_goal": fitness_goal,
+        "previous_outlet": previous_outlet,
+    }
+
+    sent = send_trial_booking_to_outlet(chat_id, updated_booking)
+
+    if sent:
+        send_trial_change_notice_to_previous_outlet(chat_id, previous_outlet, outlet, name)
+        follow_up = (
+            f"I've updated your trial booking from {previous_outlet} to {outlet} and sent the updated summary "
+            f"to the {outlet} team. Our Studio Manager will contact you within 24 hours to schedule your trial."
+        )
+    else:
+        follow_up = (
+            f"I've updated your preferred outlet to {outlet}, but the {outlet} Telegram chat is not configured yet.\n\n"
+            "Please type CUSTOMER SERVICE so our team can assist with the booking."
+        )
+
+    reply = (
+        "Updated Trial Booking Summary:\n"
+        f"- Previous Outlet: {previous_outlet or 'Not provided'}\n"
+        f"- New Outlet: {outlet}\n"
+        "- Class: Trial Class\n"
+        f"- Name: {name or 'Not provided'}\n"
+        f"- Fitness Goal: {fitness_goal or 'Not provided'}\n\n"
+        f"{follow_up}"
+    )
+
+    return add_customer_service_id_note(reply, chat_id)
+
+
+def handle_trial_outlet_change_request(chat_id: str, text: str) -> str:
+    stage = get_flow_stage(chat_id)
+    flow = get_flow(chat_id)
+    outlet = detect_outlet_choice(text)
+
+    if stage == "trial_change_outlet":
+        if not outlet:
+            return trial_change_outlet_question()
+
+        return_stage = flow.get("return_stage", "")
+
+        if return_stage.startswith("trial_") and not TRIAL_BOOKINGS.get(chat_id):
+            restore_data = {
+                key: value
+                for key, value in flow.items()
+                if key not in {"stage", "return_stage"}
+            }
+            set_flow(chat_id, return_stage, **restore_data)
+            return update_active_trial_outlet(chat_id, outlet)
+
+        clear_flow(chat_id)
+        return apply_completed_trial_outlet_change(chat_id, outlet)
+
+    if not is_trial_outlet_change_request(chat_id, text):
+        return ""
+
+    if not outlet:
+        if stage.startswith("trial_") and not TRIAL_BOOKINGS.get(chat_id):
+            flow_data = {key: value for key, value in flow.items() if key != "stage"}
+            set_flow(chat_id, "trial_change_outlet", return_stage=stage, **flow_data)
+        else:
+            set_flow(chat_id, "trial_change_outlet")
+
+        return trial_change_outlet_question()
+
+    if stage.startswith("trial_") and not TRIAL_BOOKINGS.get(chat_id):
+        return update_active_trial_outlet(chat_id, outlet)
+
+    return apply_completed_trial_outlet_change(chat_id, outlet)
 
 
 # REFER FRIEND
@@ -2216,7 +2410,20 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
             "fitness_goal": goal,
         }
 
-        send_trial_booking_to_outlet(chat_id, booking)
+        sent = send_trial_booking_to_outlet(chat_id, booking)
+
+        if sent:
+            follow_up = (
+                f"Thank you! I've sent your details to the {outlet} team. "
+                "Our Studio Manager will contact you within 24 hours to schedule your trial.\n\n"
+                "Is there anything else we can assist you with today?\n\n"
+                "If not, we'll close this ticket in a moment. Wishing you a wonderful and mindful day ahead! 🙏"
+            )
+        else:
+            follow_up = (
+                "Thank you! I've captured your trial details, but the studio Telegram chat is not configured yet.\n\n"
+                "Please type CUSTOMER SERVICE so our team can assist with the booking."
+            )
 
         reply = (
             "Trial Booking Summary:\n"
@@ -2224,9 +2431,7 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
             "- Class: Trial Class\n"
             f"- Name: {name.title()}\n"
             f"- Fitness Goal: {goal}\n\n"
-            f"Thank you! I've sent your details to the {outlet} team. 🙏\n\n"
-            "You are now connected to Customer Service. "
-            "You may reply here if you want to ask anything, and our team will receive your message."
+            f"{follow_up}"
         )
 
         return add_customer_service_id_note(reply, chat_id)
@@ -2625,6 +2830,11 @@ def process_message(chat_id: str, user_text: str) -> str:
             ),
         )
 
+    trial_outlet_change_reply = handle_trial_outlet_change_request(chat_id, text)
+
+    if trial_outlet_change_reply:
+        return finish_reply(chat_id, text, trial_outlet_change_reply)
+
     # LIVE CUSTOMER SERVICE CHAT HAS PRIORITY.
     # If the customer is connected to Customer Service, normal messages should go to support,
     # instead of resetting the bot when they type words like hi/hello.
@@ -2876,7 +3086,7 @@ def telegram_webhook():
         flush=True,
     )
 
-    if chat_type in {"group", "supergroup", "channel"}:
+    if chat_type in {"group", "supergroup", "channel"} and not is_customer_service_chat(chat_id):
         return jsonify(
             {
                 "status": "ignored",
