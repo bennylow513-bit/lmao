@@ -1,6 +1,9 @@
+import os
 import queue
-import threading
 import sys
+import threading
+
+os.environ.setdefault("AUTO_START_INACTIVITY_CHECKER", "false")
 
 from app import build_bot_reply, start_inactivity_thread
 
