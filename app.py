@@ -35,6 +35,14 @@ PORT = int(os.getenv("PORT", "5000"))
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
 SCHEDULE_FILE = os.getenv("SCHEDULE_FILE", "schedule.json")
 
+# Chatlog settings
+# This saves every Telegram conversation into local .jsonl files.
+# On Render free/normal web services, local files can be wiped during redeploys.
+# For school/demo use this is okay; for production, connect this to a database later.
+CHATLOG_ENABLED = os.getenv("CHATLOG_ENABLED", "true").lower() not in {"0", "false", "no", "off"}
+CHATLOG_DIR = os.getenv("CHATLOG_DIR", "chatlogs")
+CHATLOG_MAX_VIEW_LINES = int(os.getenv("CHATLOG_MAX_VIEW_LINES", "300"))
+
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 AI_NOT_CONFIGURED_REPLY = (
@@ -61,6 +69,7 @@ INACTIVITY_CLOSE_SECONDS = 1200
 INACTIVITY_CHECK_SECONDS = 30
 INACTIVITY_THREAD_STARTED = False
 INACTIVITY_REMINDER_QUEUE = None
+CHATLOG_LOCK = threading.Lock()
 
 
 # WORD LISTS
@@ -160,6 +169,93 @@ def phrase_list(text: str) -> List[str]:
 
 def now_sg() -> str:
     return datetime.now(ZoneInfo("Asia/Singapore")).isoformat()
+
+
+# CHATLOG HELPERS
+
+def safe_chatlog_id(chat_id: str) -> str:
+    """Make chat_id safe to use as a filename."""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", str(chat_id)).strip("_")
+    return safe or "unknown_chat"
+
+
+def redact_chatlog_text(text: str) -> str:
+    """Light redaction so sensitive info is not stored too plainly."""
+    clean = text or ""
+
+    # Emails
+    clean = re.sub(
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+        "[email redacted]",
+        clean,
+    )
+
+    # OTP-style phrases
+    clean = re.sub(
+        r"\b(otp|one time password|password|cvv)\s*[:=-]?\s*\S+",
+        r"\1: [redacted]",
+        clean,
+        flags=re.IGNORECASE,
+    )
+
+    # Long card/account/ID-like numbers. Keep normal short menu choices untouched.
+    clean = re.sub(r"\b\d{9,}\b", "[long number redacted]", clean)
+
+    return clean
+
+
+def write_chatlog(
+    chat_id: str,
+    direction: str,
+    role: str,
+    message: str,
+    meta: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append one message/event into chatlogs/<chat_id>.jsonl."""
+    if not CHATLOG_ENABLED:
+        return
+
+    try:
+        os.makedirs(CHATLOG_DIR, exist_ok=True)
+        safe_id = safe_chatlog_id(chat_id)
+        file_path = os.path.join(CHATLOG_DIR, f"{safe_id}.jsonl")
+
+        row = {
+            "time_sg": now_sg(),
+            "chat_id": str(chat_id),
+            "direction": direction,
+            "role": role,
+            "message": redact_chatlog_text(message),
+            "meta": meta or {},
+        }
+
+        with CHATLOG_LOCK:
+            with open(file_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    except Exception as e:
+        print("CHATLOG WRITE ERROR:", str(e), flush=True)
+
+
+def read_chatlog_entries(chat_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    safe_id = safe_chatlog_id(chat_id)
+    file_path = os.path.join(CHATLOG_DIR, f"{safe_id}.jsonl")
+
+    if not os.path.exists(file_path):
+        return []
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    entries: List[Dict[str, Any]] = []
+
+    for line in lines[-limit:]:
+        try:
+            entries.append(json.loads(line))
+        except Exception:
+            continue
+
+    return entries
 
 
 def clean_number(number: str) -> str:
@@ -2078,6 +2174,14 @@ def send_telegram_message(chat_id: str, message: str) -> bool:
 
         response.raise_for_status()
 
+        write_chatlog(
+            chat_id,
+            "outgoing",
+            "bot",
+            chunk,
+            {"platform": "telegram"},
+        )
+
     return True
 
 
@@ -3950,6 +4054,80 @@ def debug_trial_bookings():
     )
 
 
+@app.route("/debug/chatlogs", methods=["GET"])
+def debug_chatlogs():
+    forbidden = require_debug_route_access()
+
+    if forbidden:
+        return forbidden
+
+    os.makedirs(CHATLOG_DIR, exist_ok=True)
+    logs = []
+
+    for filename in sorted(os.listdir(CHATLOG_DIR)):
+        if not filename.endswith(".jsonl"):
+            continue
+
+        file_path = os.path.join(CHATLOG_DIR, filename)
+        stat = os.stat(file_path)
+        chat_id = filename[:-6]
+        logs.append(
+            {
+                "chat_id": chat_id,
+                "filename": filename,
+                "size_bytes": stat.st_size,
+                "modified_sg": datetime.fromtimestamp(
+                    stat.st_mtime,
+                    ZoneInfo("Asia/Singapore"),
+                ).isoformat(),
+                "view_path": f"/debug/chatlog?chat_id={chat_id}",
+            }
+        )
+
+    logs.sort(key=lambda item: item["modified_sg"], reverse=True)
+
+    return jsonify(
+        {
+            "status": "ok",
+            "chatlog_enabled": CHATLOG_ENABLED,
+            "chatlog_dir": CHATLOG_DIR,
+            "count": len(logs),
+            "logs": logs,
+        }
+    )
+
+
+@app.route("/debug/chatlog", methods=["GET"])
+def debug_chatlog():
+    forbidden = require_debug_route_access()
+
+    if forbidden:
+        return forbidden
+
+    chat_id = request.args.get("chat_id", "").strip()
+
+    if not chat_id:
+        return jsonify({"status": "error", "message": "Missing chat_id"}), 400
+
+    try:
+        limit = int(request.args.get("limit", str(CHATLOG_MAX_VIEW_LINES)))
+    except ValueError:
+        limit = CHATLOG_MAX_VIEW_LINES
+
+    limit = max(1, min(limit, CHATLOG_MAX_VIEW_LINES))
+    entries = read_chatlog_entries(chat_id, limit=limit)
+
+    return jsonify(
+        {
+            "status": "ok",
+            "chat_id": chat_id,
+            "limit": limit,
+            "count": len(entries),
+            "entries": entries,
+        }
+    )
+
+
 @app.route("/telegram/webhook", methods=["GET"])
 def telegram_webhook_test():
     return jsonify(
@@ -3993,6 +4171,21 @@ def telegram_webhook():
     print(
         f"INCOMING TELEGRAM UPDATE | chat_id={chat_id} | chat_type={chat_type} | text={text}",
         flush=True,
+    )
+
+    from_user = message.get("from", {})
+    write_chatlog(
+        chat_id,
+        "incoming",
+        "customer_service" if is_customer_service_chat(chat_id) else "customer",
+        text,
+        {
+            "platform": "telegram",
+            "chat_type": chat_type,
+            "message_id": message.get("message_id"),
+            "telegram_username": from_user.get("username", ""),
+            "telegram_first_name": from_user.get("first_name", ""),
+        },
     )
 
     if chat_type in {"group", "supergroup", "channel"} and not is_customer_service_chat(chat_id):
@@ -4048,8 +4241,26 @@ def telegram_webhook():
 
 
 def build_bot_reply(chat_id: str, user_text: str) -> str:
+    write_chatlog(
+        chat_id,
+        "incoming",
+        "local_user",
+        user_text,
+        {"platform": "local_test"},
+    )
+
     reply = process_message(chat_id, user_text)
-    return translate_reply_if_needed(chat_id, user_text, reply)
+    final_reply = translate_reply_if_needed(chat_id, user_text, reply)
+
+    write_chatlog(
+        chat_id,
+        "outgoing",
+        "local_bot",
+        final_reply,
+        {"platform": "local_test"},
+    )
+
+    return final_reply
 
 
 if os.getenv("AUTO_START_INACTIVITY_CHECKER", "true").lower() not in {"0", "false", "no"}:
