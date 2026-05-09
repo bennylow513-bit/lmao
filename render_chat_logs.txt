@@ -1,0 +1,90 @@
+RENDER CHATLOG AUTO UPDATE
+Last updated: 2026-05-10 01:29:34
+============================================================
+
+[2026-05-10T01:14:57.530334+08:00]
+Chat ID: 5528298825
+INCOMING | customer: hi
+------------------------------------------------------------
+[2026-05-10T01:14:58.416803+08:00]
+Chat ID: 5528298825
+OUTGOING | bot: Namaste! Thank you for reaching out to Jal Yoga. 🙏
+
+To help us handle your request as quickly as possible, please let us know what you're looking for today:
+
+1. Schedule a Trial
+2. I’m a current member
+3. I’d like to find out more about Jal Yoga
+4. Corporate/Partnerships
+5. Staff Hub
+
+You can also type CUSTOMER SERVICE anytime, in any language, to speak to our team.
+Reply STOP anytime to stop receiving follow-up messages.
+
+Reply MENU to return to the main menu.
+------------------------------------------------------------
+[2026-05-10T01:15:35.845096+08:00]
+Chat ID: 5528298825
+INCOMING | customer: 2
+------------------------------------------------------------
+[2026-05-10T01:15:36.591743+08:00]
+Chat ID: 5528298825
+OUTGOING | bot: Welcome back! Hope your practice is going well. 🙏
+
+How can I help you with your membership today?
+
+1. Class Cancellation
+2. Membership Suspension
+3. I need help with my class booking
+4. I would like to refer a friend
+
+Reply MENU to return to the main menu.
+------------------------------------------------------------
+[2026-05-10T01:18:28.688844+08:00]
+Chat ID: 5528298825
+INCOMING | customer: 4
+------------------------------------------------------------
+[2026-05-10T01:18:30.000910+08:00]
+Chat ID: 5528298825
+OUTGOING | bot: That’s wonderful — what is your friend’s full name?
+
+Reply MENU to return to the main menu.
+------------------------------------------------------------
+[2026-05-10T01:25:40.675017+08:00]
+Chat ID: 5528298825
+INCOMING | customer: MENU
+------------------------------------------------------------
+[2026-05-10T01:25:41.493178+08:00]
+Chat ID: 5528298825
+OUTGOING | bot: Namaste! Thank you for reaching out to Jal Yoga. 🙏
+
+To help us handle your request as quickly as possible, please let us know what you're looking for today:
+
+1. Schedule a Trial
+2. I’m a current member
+3. I’d like to find out more about Jal Yoga
+4. Corporate/Partnerships
+5. Staff Hub
+
+You can also type CUSTOMER SERVICE anytime, in any language, to speak to our team.
+Reply STOP anytime to stop receiving follow-up messages.
+
+Reply MENU to return to the main menu.
+------------------------------------------------------------
+[2026-05-10T01:26:35.387208+08:00]
+Chat ID: 5528298825
+INCOMING | customer: 2
+------------------------------------------------------------
+[2026-05-10T01:26:36.182569+08:00]
+Chat ID: 5528298825
+OUTGOING | bot: Welcome back! Hope your practice is going well. 🙏
+
+How can I help you with your membership today?
+
+1. Class Cancellation
+2. Membership Suspension
+3. I need help with my class booking
+4. I would like to refer a friend
+
+Reply MENU to return to the main menu.
+------------------------------------------------------------
