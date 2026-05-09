@@ -42,30 +42,3 @@ test_bot.py
 requirements.txt
 .env
 templates/index.html
-```
-
----
-
-## Chat Logs
-
-Chatbot conversations are saved as JSON lines in:
-
-```bash
-chat_logs.jsonl
-```
-
-Each line stores one user message and bot reply with timestamp, chat ID, channel, flow stage, outlet context, and language.
-
-Optional environment variable:
-
-```bash
-CHAT_LOG_FILE=chat_logs.jsonl
-```
-
-To view recent logs on the deployed app, use:
-
-```bash
-/debug/chat-logs?token=YOUR_DEBUG_ROUTE_TOKEN&limit=100
-```
-
-The debug route is protected by `DEBUG_ROUTE_TOKEN`, the same as the other debug routes.
