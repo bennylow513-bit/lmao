@@ -727,10 +727,25 @@ def is_all_outlets_request(text: str) -> bool:
     if any(word in clean for word in ["contact", "phone", "whatsapp", "call", "hotline"]):
         return False
 
+    outlet_terms = {
+        "outlet",
+        "outlets",
+        "studio",
+        "studios",
+        "branch",
+        "branches",
+        "location",
+        "locations",
+    }
+    has_outlet_term = bool(set(clean.split()) & outlet_terms)
+
+    if has_outlet_term and any(phrase in clean for phrase in ["how many", "number of", "count of"]):
+        return True
+
     outlet_words = r"(outlet|outlets|studio|studios|branch|branches|location|locations)"
 
     patterns = [
-        rf"\b(how many|number of)\b.*\b{outlet_words}\b",
+        rf"\b(how many|number of|count of)\b.*\b{outlet_words}\b",
         rf"\b(list|show|share|send|see)\b.*\b(all )?{outlet_words}\b",
         rf"\ball\b.*\b{outlet_words}\b",
         rf"\b(studio locations|outlet locations)\b",
@@ -1583,7 +1598,8 @@ def class_cancellation_policy(next_step: str) -> str:
 
 
 def studio_locations_text() -> str:
-    lines = ["Studio Locations 🙏", ""]
+    outlet_label = "outlet" if len(STUDIOS) == 1 else "outlets"
+    lines = [f"We have {len(STUDIOS)} {outlet_label}:", ""]
 
     for index, studio in enumerate(STUDIOS, start=1):
         lines.extend([f"{index}. {studio['name']}", studio["address"], ""])
@@ -3737,4 +3753,3 @@ if __name__ == "__main__":
         port=PORT,
         debug=os.getenv("FLASK_DEBUG", "false").lower() == "true",
     )
-    
