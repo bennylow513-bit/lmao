@@ -34,6 +34,7 @@ DEBUG_ROUTE_TOKEN = os.getenv("DEBUG_ROUTE_TOKEN", "")
 PORT = int(os.getenv("PORT", "5000"))
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
 SCHEDULE_FILE = os.getenv("SCHEDULE_FILE", "schedule.json")
+CHAT_LOG_FILE = os.getenv("CHAT_LOG_FILE", "chat_logs.jsonl")
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -55,6 +56,7 @@ INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 USER_LANGUAGE: Dict[str, str] = {}
 LIVE_SUPPORT_CHATS: Dict[str, Dict[str, str]] = {}
 SUPPORT_ACTIVE_CUSTOMER: Dict[str, str] = {}
+CHAT_LOG_LOCK = threading.Lock()
 
 INACTIVITY_WARNING_SECONDS = 600
 INACTIVITY_CLOSE_SECONDS = 1200
@@ -1148,6 +1150,66 @@ def repeat_current_flow_question(chat_id: str) -> str:
     return builder(get_flow(chat_id)) if builder else main_menu_text()
 
 
+def append_chat_log(chat_id: str, user_text: str, bot_reply: str, channel: str = "telegram") -> None:
+    if not CHAT_LOG_FILE:
+        return
+
+    entry = {
+        "timestamp": now_sg(),
+        "channel": channel,
+        "chat_id": str(chat_id),
+        "user_text": user_text,
+        "bot_reply": bot_reply,
+        "flow_stage": get_flow_stage(chat_id),
+        "outlet_context": get_flow_outlet(chat_id),
+        "language": USER_LANGUAGE.get(chat_id, "English"),
+    }
+
+    try:
+        folder = os.path.dirname(CHAT_LOG_FILE)
+
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+
+        with CHAT_LOG_LOCK:
+            with open(CHAT_LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    except Exception as e:
+        print(f"CHAT LOG WRITE ERROR: {e}", flush=True)
+
+
+def read_recent_chat_logs(limit: int = 100) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 100), 500))
+
+    if not CHAT_LOG_FILE or not os.path.exists(CHAT_LOG_FILE):
+        return []
+
+    try:
+        with CHAT_LOG_LOCK:
+            with open(CHAT_LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()[-limit:]
+
+        logs = []
+
+        for line in lines:
+            clean = line.strip()
+
+            if not clean:
+                continue
+
+            try:
+                logs.append(json.loads(clean))
+            except json.JSONDecodeError:
+                logs.append({"raw": clean})
+
+        return logs
+
+    except Exception as e:
+        print(f"CHAT LOG READ ERROR: {e}", flush=True)
+        return []
+
+
 def queue_pending_handoff(chat_id: str, user_message: str, clean_answer: str) -> str:
     PENDING_HANDOFFS[chat_id] = {
         "user_message": user_message,
@@ -2199,7 +2261,9 @@ def customer_service_closed_text() -> str:
 def close_customer_chat_from_support(support_chat_id: str, customer_chat_id: str) -> str:
     close_live_support_chat(customer_chat_id)
     SUPPORT_ACTIVE_CUSTOMER.pop(str(support_chat_id), None)
-    send_telegram_message(customer_chat_id, customer_service_closed_text())
+    reply = customer_service_closed_text()
+    send_telegram_message(customer_chat_id, reply)
+    append_chat_log(customer_chat_id, "[customer service closed chat]", reply, channel="customer_service")
     return f"Closed live chat with customer {customer_chat_id}."
 
 
@@ -2213,7 +2277,9 @@ def send_support_message_to_customer(support_chat_id: str, customer_chat_id: str
     if contains_blocked_word(clean_message):
         return "Message blocked. Please use professional Customer Service language."
 
-    send_telegram_message(customer_chat_id, customer_service_reply_text(clean_message))
+    reply = customer_service_reply_text(clean_message)
+    send_telegram_message(customer_chat_id, reply)
+    append_chat_log(customer_chat_id, "[customer service reply]", reply, channel="customer_service")
 
     live_chat = LIVE_SUPPORT_CHATS.get(customer_chat_id, {})
 
@@ -3950,6 +4016,30 @@ def debug_trial_bookings():
     )
 
 
+@app.route("/debug/chat-logs", methods=["GET"])
+def debug_chat_logs():
+    forbidden = require_debug_route_access()
+
+    if forbidden:
+        return forbidden
+
+    try:
+        limit = int(request.args.get("limit", "100"))
+    except ValueError:
+        limit = 100
+
+    logs = read_recent_chat_logs(limit)
+
+    return jsonify(
+        {
+            "status": "ok",
+            "log_file": CHAT_LOG_FILE,
+            "count": len(logs),
+            "logs": logs,
+        }
+    )
+
+
 @app.route("/telegram/webhook", methods=["GET"])
 def telegram_webhook_test():
     return jsonify(
@@ -4006,9 +4096,11 @@ def telegram_webhook():
         ), 200
 
     if not text:
+        reply = "I can currently handle text messages only. Please type your message, or type MENU."
+        append_chat_log(chat_id, "[non-text message]", reply, channel="telegram")
         send_telegram_message(
             chat_id,
-            "I can currently handle text messages only. Please type your message, or type MENU.",
+            reply,
         )
 
         return jsonify({"status": "ok"}), 200
@@ -4027,8 +4119,7 @@ def telegram_webhook():
             send_telegram_message(chat_id, customer_service_reply)
             return jsonify({"status": "ok"}), 200
 
-        reply = process_message(chat_id, text)
-        reply = translate_reply_if_needed(chat_id, text, reply)
+        reply = build_bot_reply(chat_id, text, channel="telegram")
 
         send_telegram_message(chat_id, reply)
 
@@ -4047,9 +4138,11 @@ def telegram_webhook():
     return jsonify({"status": "ok"}), 200
 
 
-def build_bot_reply(chat_id: str, user_text: str) -> str:
+def build_bot_reply(chat_id: str, user_text: str, channel: str = "local") -> str:
     reply = process_message(chat_id, user_text)
-    return translate_reply_if_needed(chat_id, user_text, reply)
+    final_reply = translate_reply_if_needed(chat_id, user_text, reply)
+    append_chat_log(chat_id, user_text, final_reply, channel=channel)
+    return final_reply
 
 
 if os.getenv("AUTO_START_INACTIVITY_CHECKER", "true").lower() not in {"0", "false", "no"}:
