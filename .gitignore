@@ -1,8 +1,10 @@
 .env
 __pycache__/
 *.pyc
-node_modules/
-requests_log.jsonl
-chat_logs.jsonl
 chatlogs/
+chat_logs.jsonl
+chat_logs.txt
+render_chat_log.json
+render_chat_logs.json
+render_chat_logs.txt
 telegram_opt_out_users.json
