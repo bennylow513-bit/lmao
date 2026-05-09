@@ -50,6 +50,7 @@ CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 PENDING_HANDOFFS: Dict[str, Dict[str, str]] = {}
 TRIAL_BOOKINGS: Dict[str, Dict[str, str]] = {}
 FLOW_STATE: Dict[str, Dict[str, str]] = {}
+OUTLET_CONTEXT: Dict[str, str] = {}
 INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 USER_LANGUAGE: Dict[str, str] = {}
 LIVE_SUPPORT_CHATS: Dict[str, Dict[str, str]] = {}
@@ -389,9 +390,18 @@ def get_studio_address(outlet_name: str) -> str:
     )
 
 
+def remember_outlet_context(chat_id: str, outlet: str) -> None:
+    if outlet and outlet in studio_names():
+        OUTLET_CONTEXT[chat_id] = outlet
+
+
 def get_flow_outlet(chat_id: str) -> str:
     flow = get_flow(chat_id)
-    return flow.get("outlet", "") or flow.get("recommended_outlet", "")
+    return (
+        flow.get("outlet", "")
+        or flow.get("recommended_outlet", "")
+        or OUTLET_CONTEXT.get(chat_id, "")
+    )
 
 
 def clean_location_candidate(text: str) -> str:
@@ -803,6 +813,36 @@ def build_outlet_contact_reply(outlet: str) -> str:
     )
 
 
+def build_customer_service_contact_reply(outlet: str = "") -> str:
+    number = outlet_whatsapp_number(outlet) if outlet else ""
+
+    if not number or clean_number(number).upper() == "TBC":
+        number = CUSTOMER_SERVICE_WHATSAPP_NUMBER
+
+    clean = clean_number(number)
+
+    if not clean or clean.upper() == "TBC":
+        if outlet:
+            return (
+                f"{outlet} Customer Service contact is not configured yet.\n\n"
+                f"Address:\n{get_studio_address(outlet)}"
+            )
+
+        return "Customer Service contact is not configured yet."
+
+    title = f"{outlet} Customer Service contact" if outlet else "Jal Yoga Customer Service contact"
+    lines = [
+        f"{title}:",
+        f"+{clean}",
+        f"https://wa.me/{clean}",
+    ]
+
+    if outlet:
+        lines.extend(["", "Address:", get_studio_address(outlet)])
+
+    return "\n".join(lines)
+
+
 def live_contact_config_text() -> str:
     outlet_lines = []
 
@@ -927,6 +967,7 @@ def reset_chat_state(
     reset_history(chat_id)
     PENDING_HANDOFFS.pop(chat_id, None)
     clear_flow(chat_id)
+    OUTLET_CONTEXT.pop(chat_id, None)
     close_live_support_chat(chat_id)
 
     if include_trial:
@@ -1063,6 +1104,23 @@ def is_customer_service_request(text: str) -> bool:
         return True
 
     return fuzzy_phrase_match(clean, CUSTOMER_SERVICE_FUZZY_TARGETS, threshold=0.78)
+
+
+def is_customer_service_contact_request(text: str) -> bool:
+    clean = simple_text(text)
+
+    if not clean or not is_customer_service_request(text):
+        return False
+
+    contact_detail_words = {"phone", "number", "whatsapp", "hotline", "call"}
+
+    if any(word in clean.split() for word in contact_detail_words):
+        return True
+
+    is_follow_up = any(phrase in clean for phrase in ["what about", "how about"])
+    handoff_words = {"talk", "speak", "connect", "human", "agent", "staff", "live"}
+
+    return is_follow_up and not any(word in clean.split() for word in handoff_words)
 
 
 def is_outlet_contact_request(text: str) -> bool:
@@ -1727,6 +1785,7 @@ def start_customer_service_flow(chat_id: str, text: str) -> str:
     if not outlet:
         return queue_pending_handoff(chat_id, text, clean_answer)
 
+    remember_outlet_context(chat_id, outlet)
     clear_flow(chat_id)
     return send_handoff_result(
         chat_id,
@@ -2758,6 +2817,7 @@ def handle_outlet_choice_flow(chat_id: str, text: str, reply_factory) -> str:
     if not outlet:
         return outlet_number_question()
 
+    remember_outlet_context(chat_id, outlet)
     clear_flow(chat_id)
     return reply_factory(outlet)
 
@@ -2776,6 +2836,7 @@ def handle_contact_outlet_flow(chat_id: str, text: str) -> str:
 
 def store_nearest_outlet_action(chat_id: str, recommendation: Dict[str, Any]) -> None:
     top = recommendation["ranked_studios"][0]
+    remember_outlet_context(chat_id, top["name"])
     set_flow(
         chat_id,
         "nearest_outlet_action",
@@ -3320,6 +3381,11 @@ def process_message(chat_id: str, user_text: str) -> str:
     if not text:
         return "Please type your message, or type MENU to see the options."
 
+    mentioned_outlet = detect_outlet_from_text(text)
+
+    if mentioned_outlet:
+        remember_outlet_context(chat_id, mentioned_outlet)
+
     if is_opt_out_request(text):
         OPT_OUT_USERS.add(chat_id)
         save_opt_out_users()
@@ -3442,6 +3508,14 @@ def process_message(chat_id: str, user_text: str) -> str:
         reset_chat_state(chat_id)
 
         return start_flow_reply(chat_id, text, "main_menu", main_menu_text())
+
+    if is_customer_service_contact_request(text):
+        outlet = detect_outlet_choice(text) or get_flow_outlet(chat_id)
+
+        if outlet:
+            remember_outlet_context(chat_id, outlet)
+
+        return finish_reply(chat_id, text, build_customer_service_contact_reply(outlet))
 
     # CUSTOMER SERVICE SHORTCUT.
     # User can ask for customer service anytime, in any supported language,
