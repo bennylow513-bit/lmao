@@ -89,3 +89,11 @@ To test log writing without Telegram:
 ```
 
 Important: set `DEBUG_ROUTE_TOKEN` in Render or your `.env`, otherwise these debug links are blocked.
+
+
+## code to make it auto update chatlog
+python auto_render_chatlog.py
+
+
+## code to upload dataset into knowledge 
+python auto_knowledge.py
