@@ -41,6 +41,7 @@ SCHEDULE_FILE = os.getenv("SCHEDULE_FILE", "schedule.json")
 # For school/demo use this is okay; for production, connect this to a database later.
 CHATLOG_ENABLED = os.getenv("CHATLOG_ENABLED", "true").lower() not in {"0", "false", "no", "off"}
 CHATLOG_DIR = os.getenv("CHATLOG_DIR", "chatlogs")
+CHATLOG_FILE = os.getenv("CHATLOG_FILE", "chat_logs.jsonl")
 CHATLOG_MAX_VIEW_LINES = int(os.getenv("CHATLOG_MAX_VIEW_LINES", "300"))
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -211,14 +212,14 @@ def write_chatlog(
     message: str,
     meta: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Append one message/event into chatlogs/<chat_id>.jsonl."""
+    """Append one message/event into chat_logs.jsonl and chatlogs/<chat_id>.jsonl."""
     if not CHATLOG_ENABLED:
         return
 
     try:
         os.makedirs(CHATLOG_DIR, exist_ok=True)
         safe_id = safe_chatlog_id(chat_id)
-        file_path = os.path.join(CHATLOG_DIR, f"{safe_id}.jsonl")
+        per_chat_path = os.path.join(CHATLOG_DIR, f"{safe_id}.jsonl")
 
         row = {
             "time_sg": now_sg(),
@@ -230,8 +231,19 @@ def write_chatlog(
         }
 
         with CHATLOG_LOCK:
-            with open(file_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            line = json.dumps(row, ensure_ascii=False) + "\n"
+
+            if CHATLOG_FILE:
+                chatlog_file_dir = os.path.dirname(CHATLOG_FILE)
+
+                if chatlog_file_dir:
+                    os.makedirs(chatlog_file_dir, exist_ok=True)
+
+                with open(CHATLOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(line)
+
+            with open(per_chat_path, "a", encoding="utf-8") as f:
+                f.write(line)
 
     except Exception as e:
         print("CHATLOG WRITE ERROR:", str(e), flush=True)
@@ -245,6 +257,24 @@ def read_chatlog_entries(chat_id: str, limit: int = 100) -> List[Dict[str, Any]]
         return []
 
     with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    entries: List[Dict[str, Any]] = []
+
+    for line in lines[-limit:]:
+        try:
+            entries.append(json.loads(line))
+        except Exception:
+            continue
+
+    return entries
+
+
+def read_chatlog_file_entries(limit: int = 100) -> List[Dict[str, Any]]:
+    if not CHATLOG_FILE or not os.path.exists(CHATLOG_FILE):
+        return []
+
+    with open(CHATLOG_FILE, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     entries: List[Dict[str, Any]] = []
@@ -3978,6 +4008,8 @@ def health():
             "active_inactivity_chats": len(INACTIVITY_STATE),
             "schedule_file": SCHEDULE_FILE,
             "chatlog_enabled": CHATLOG_ENABLED,
+            "chatlog_file": os.path.abspath(CHATLOG_FILE) if CHATLOG_FILE else "",
+            "chatlog_file_exists": bool(CHATLOG_FILE and os.path.exists(CHATLOG_FILE)),
             "chatlog_dir": os.path.abspath(CHATLOG_DIR),
             "chatlog_dir_exists": os.path.isdir(CHATLOG_DIR),
         }
@@ -4131,6 +4163,67 @@ def debug_chatlog():
             "limit": limit,
             "count": len(entries),
             "entries": entries,
+        }
+    )
+
+
+@app.route("/debug/chat-log-file", methods=["GET"])
+def debug_chat_log_file():
+    forbidden = require_debug_route_access()
+
+    if forbidden:
+        return forbidden
+
+    try:
+        limit = int(request.args.get("limit", str(CHATLOG_MAX_VIEW_LINES)))
+    except ValueError:
+        limit = CHATLOG_MAX_VIEW_LINES
+
+    limit = max(1, min(limit, CHATLOG_MAX_VIEW_LINES))
+    entries = read_chatlog_file_entries(limit=limit)
+
+    return jsonify(
+        {
+            "status": "ok",
+            "chatlog_file": CHATLOG_FILE,
+            "chatlog_file_exists": bool(CHATLOG_FILE and os.path.exists(CHATLOG_FILE)),
+            "limit": limit,
+            "count": len(entries),
+            "entries": entries,
+        }
+    )
+
+
+@app.route("/debug/test-chatlog", methods=["GET"])
+def debug_test_chatlog():
+    forbidden = require_debug_route_access()
+
+    if forbidden:
+        return forbidden
+
+    write_chatlog(
+        "DEBUG_TEST",
+        "incoming",
+        "debug_user",
+        "debug test message",
+        {"platform": "debug"},
+    )
+    write_chatlog(
+        "DEBUG_TEST",
+        "outgoing",
+        "debug_bot",
+        "debug test reply",
+        {"platform": "debug"},
+    )
+
+    return jsonify(
+        {
+            "status": "ok",
+            "message": "Test chatlog written into chat_logs.jsonl.",
+            "chatlog_file": CHATLOG_FILE,
+            "chatlog_file_exists": bool(CHATLOG_FILE and os.path.exists(CHATLOG_FILE)),
+            "file_view_path": "/debug/chat-log-file",
+            "chat_view_path": "/debug/chatlog?chat_id=DEBUG_TEST",
         }
     )
 

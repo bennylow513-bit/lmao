@@ -48,7 +48,13 @@ templates/index.html
 
 ## Chat Logs
 
-Chat logs are saved into the `chatlogs/` folder as one `.jsonl` file per Telegram chat.
+Chat logs are saved into one main JSONL file:
+
+```bash
+chat_logs.jsonl
+```
+
+They are also saved into the `chatlogs/` folder as one `.jsonl` file per Telegram chat.
 
 Example:
 
@@ -62,6 +68,12 @@ To check all chatlog files on the deployed app:
 
 ```bash
 /debug/chatlogs?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+To view the main `chat_logs.jsonl` file on the deployed app:
+
+```bash
+/debug/chat-log-file?token=YOUR_DEBUG_ROUTE_TOKEN&limit=100
 ```
 
 To view one chat:
