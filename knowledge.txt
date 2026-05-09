@@ -93,11 +93,11 @@ Rules:
   - Keep wording clear that it is the likely nearest outlet based on the typed location.
 
 Nearest outlet guide:
-- Alexandra is usually best for central/south, Alexandra, Queenstown, Redhill, Tiong Bahru, HarbourFront/VivoCity, Bukit Merah, CBD/Raffles Place/Marina Bay, Chinatown/Tanjong Pagar, City Hall/Bugis/Suntec, Orchard/Somerset, Holland Village/one-north, Pasir Panjang.
-- Katong is usually best for east, Katong, Marine Parade/Parkway Parade, East Coast/Siglap, Bedok, Tampines, Pasir Ris, Paya Lebar/Eunos, Changi.
-- Kovan is usually best for north-east, Kovan, Serangoon/NEX, Hougang, Sengkang/Compass One, Punggol/Waterway Point, Ang Mo Kio, Bishan/Junction 8, Toa Payoh, Yio Chu Kang.
-- Upper Bukit Timah is usually best for west/north-west, Upper Bukit Timah, Bukit Timah/Beauty World, Clementi/Dover, West Coast, Jurong/Jurong East, Bukit Batok, Bukit Panjang, Choa Chu Kang/Teck Whye, Boon Lay.
-- Woodlands is usually best for north, Woodlands/Causeway Point, Admiralty, Marsiling, Sembawang, Yishun/Northpoint.
+- Alexandra is usually best for central/south, Alexandra, Anchorpoint, Bras Basah, Bugis, Buona Vista, Chinatown, City Hall, Clarke Quay, Commonwealth, Dempsey, Dhoby Ghaut, Esplanade, Great World, HarbourFront/VivoCity, Havelock, Holland Village, Kent Ridge, Labrador Park, Mapletree Business City, Marina Bay/MBS, NUS, Newton, Novena, one-north, Orchard/Somerset, Outram Park, Pasir Panjang, Promenade, Queenstown, Raffles Place, Redhill, River Valley, Robertson Quay, Sentosa, Suntec, Tanglin, Telok Blangah, Tanjong Pagar, Tiong Bahru.
+- Katong is usually best for east, Katong, Aljunied, Bayshore, Bedok, Bedok Mall, Bedok Reservoir, Changi, Changi Business Park/CBP, Dakota, East Coast, Eunos, Expo, Geylang, Joo Chiat, Kaki Bukit, Kallang, Katong Shopping Centre, Katong V, Kembangan, Marine Parade, Marine Terrace, Mountbatten, Parkway Parade, Pasir Ris, Paya Lebar/PLQ, Siglap, Siglap Centre, Simei, Stadium, Tampines, Tanah Merah, Tanjong Katong, Tanjong Rhu, Ubi.
+- Kovan is usually best for north-east, Kovan, Ang Mo Kio/AMK, Bartley, Bidadari, Bishan/Junction 8, Boon Keng, Braddell, Bright Hill, Buangkok, Caldecott, Compass One, Farrer Park, HDB Hub, Hougang, Lorong Chuan, MacPherson, Marymount, NEX, Potong Pasir, Punggol, Seletar, Sengkang, Serangoon, Tai Seng, Thomson Plaza, Toa Payoh/TPY, Upper Serangoon, Upper Thomson, Waterway Point, Woodleigh, Yio Chu Kang/YCK.
+- Upper Bukit Timah is usually best for west/north-west, Upper Bukit Timah, Beauty World, Bukit Batok, Bukit Gombak, Bukit Panjang, Bukit Panjang Plaza, Bukit Timah, Cashew, Chinese Garden, Choa Chu Kang/CCK, Clementi, Clementi Mall, Dairy Farm, Dover, Gek Poh, Gul Circle, Hillview, IMM, Jem, Joo Koon, Jurong, Jurong East, King Albert Park, Lakeside, Lot One, Nanyang, Ngee Ann Poly, NTU, Pioneer, Rail Mall, SIM, Sixth Avenue, Taman Jurong, Tengah, Teck Whye, Tuas, Tuas Link, West Coast, Westgate, Yew Tee.
+- Woodlands is usually best for north, Woodlands, Woodlands Square, Admiralty, Canberra, Causeway Point, Khatib, Mandai, Marsiling, Northpoint, Sembawang, Senoko, Springleaf, Yishun.
 
 Nearest outlet postal prefix guide:
 - Alexandra: 01-14, 17-23

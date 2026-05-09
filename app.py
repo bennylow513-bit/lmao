@@ -410,9 +410,9 @@ def clean_location_candidate(text: str) -> str:
     candidate = re.sub(r"\b(singapore|sg)\b", " ", candidate)
     candidate = re.sub(
         r"\b(nearest|closest|nearer|closer|nearby|outlet|outlets|studio|studios|branch|branches|"
-        r"jal yoga|recommend|recommended|suggest|pick|choose|which|what|where|"
+        r"jal yoga|recommend|recommended|recomend|reccomend|reccomed|suggest|pick|choose|which|what|where|"
         r"is|are|the|to|from|around|near|at|in|my|me|current|location|locate|"
-        r"help|find|based|on|please|pls|can|you|i|im|i'm|stay|staying|live|"
+        r"home|house|residence|address|postal|code|help|find|based|on|please|pls|can|you|i|im|i'm|stay|staying|live|"
         r"living|am|for|would|like)\b",
         " ",
         candidate,
@@ -570,7 +570,225 @@ def parse_nearest_outlet_postal_rules(text: str) -> Dict[str, str]:
     return rules
 
 
-NEAREST_OUTLET_AREA_RULES = parse_nearest_outlet_area_rules(KNOWLEDGE_TEXT)
+DEFAULT_NEAREST_OUTLET_AREAS: Dict[str, List[str]] = {
+    "Alexandra": [
+        "Alexandra",
+        "Anchorpoint",
+        "Bras Basah",
+        "Bugis",
+        "Buona Vista",
+        "Chinatown",
+        "City Hall",
+        "Clarke Quay",
+        "Commonwealth",
+        "Dempsey",
+        "Dhoby Ghaut",
+        "Esplanade",
+        "Great World",
+        "HarbourFront",
+        "Havelock",
+        "Holland Village",
+        "Kent Ridge",
+        "Labrador Park",
+        "Mapletree Business City",
+        "Marina Bay",
+        "MBS",
+        "NUS",
+        "Newton",
+        "Novena",
+        "one-north",
+        "Orchard",
+        "Outram Park",
+        "Pasir Panjang",
+        "Promenade",
+        "Queenstown",
+        "Raffles Place",
+        "Redhill",
+        "River Valley",
+        "Robertson Quay",
+        "Sentosa",
+        "Somerset",
+        "Suntec",
+        "Tanglin",
+        "Telok Blangah",
+        "Tanjong Pagar",
+        "Tiong Bahru",
+        "VivoCity",
+    ],
+    "Katong": [
+        "Aljunied",
+        "Bayshore",
+        "Bedok",
+        "Bedok Mall",
+        "Bedok Reservoir",
+        "CBP",
+        "Changi",
+        "Changi Business Park",
+        "Dakota",
+        "East Coast",
+        "Eunos",
+        "Expo",
+        "Geylang",
+        "Joo Chiat",
+        "Kaki Bukit",
+        "Kallang",
+        "Katong",
+        "Katong Shopping Centre",
+        "Katong V",
+        "Kembangan",
+        "Marine Parade",
+        "Marine Terrace",
+        "Mountbatten",
+        "Parkway Parade",
+        "Paya Lebar",
+        "PLQ",
+        "Pasir Ris",
+        "Siglap",
+        "Siglap Centre",
+        "Simei",
+        "Stadium",
+        "Tampines",
+        "Tanah Merah",
+        "Tanjong Katong",
+        "Tanjong Rhu",
+        "Ubi",
+    ],
+    "Kovan": [
+        "AMK",
+        "Ang Mo Kio",
+        "Bartley",
+        "Bidadari",
+        "Bishan",
+        "Boon Keng",
+        "Braddell",
+        "Bright Hill",
+        "Buangkok",
+        "Caldecott",
+        "Compass One",
+        "Farrer Park",
+        "HDB Hub",
+        "Hougang",
+        "Junction 8",
+        "Kovan",
+        "Lorong Chuan",
+        "MacPherson",
+        "Marymount",
+        "NEX",
+        "Potong Pasir",
+        "Punggol",
+        "Seletar",
+        "Sengkang",
+        "Serangoon",
+        "Tai Seng",
+        "Thomson Plaza",
+        "Toa Payoh",
+        "TPY",
+        "Upper Serangoon",
+        "Upper Thomson",
+        "Waterway Point",
+        "Woodleigh",
+        "YCK",
+        "Yio Chu Kang",
+    ],
+    "Upper Bukit Timah": [
+        "Beauty World",
+        "Boon Lay",
+        "Bukit Batok",
+        "Bukit Gombak",
+        "Bukit Panjang",
+        "Bukit Timah",
+        "Cashew",
+        "Chinese Garden",
+        "Choa Chu Kang",
+        "CCK",
+        "Clementi",
+        "Clementi Mall",
+        "Dairy Farm",
+        "Dover",
+        "Gek Poh",
+        "Gul Circle",
+        "Hillview",
+        "IMM",
+        "Jem",
+        "Joo Koon",
+        "Jurong",
+        "Jurong East",
+        "King Albert Park",
+        "Lakeside",
+        "Lot One",
+        "Nanyang",
+        "Ngee Ann Poly",
+        "NTU",
+        "Bukit Panjang Plaza",
+        "Pioneer",
+        "Rail Mall",
+        "SIM",
+        "Sixth Avenue",
+        "Taman Jurong",
+        "Tengah",
+        "Teck Whye",
+        "Tuas",
+        "Tuas Link",
+        "West Coast",
+        "Westgate",
+        "Yew Tee",
+    ],
+    "Woodlands": [
+        "Admiralty",
+        "Canberra",
+        "Causeway Point",
+        "Khatib",
+        "Marsiling",
+        "Mandai",
+        "Northpoint",
+        "Sembawang",
+        "Senoko",
+        "Springleaf",
+        "Woodlands",
+        "Woodlands Square",
+        "Yishun",
+    ],
+}
+
+
+def default_nearest_outlet_area_rules() -> List[Dict[str, str]]:
+    rules: List[Dict[str, str]] = []
+    names = set(studio_names())
+
+    for outlet, labels in DEFAULT_NEAREST_OUTLET_AREAS.items():
+        if outlet not in names:
+            continue
+
+        for label in labels:
+            key = simple_text(label)
+
+            if key:
+                rules.append({"outlet": outlet, "label": label, "key": key})
+
+    return rules
+
+
+def merge_nearest_outlet_area_rules(
+    knowledge_rules: List[Dict[str, str]],
+    default_rules: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    merged = list(knowledge_rules)
+    seen_keys = {rule.get("key", "") for rule in merged}
+
+    for rule in default_rules:
+        key = rule.get("key", "")
+
+        if key and key not in seen_keys:
+            merged.append(rule)
+            seen_keys.add(key)
+
+    return merged
+
+
+NEAREST_OUTLET_AREA_RULES = merge_nearest_outlet_area_rules(
+    parse_nearest_outlet_area_rules(KNOWLEDGE_TEXT),
+    default_nearest_outlet_area_rules(),
+)
 NEAREST_OUTLET_POSTAL_RULES = parse_nearest_outlet_postal_rules(KNOWLEDGE_TEXT)
 
 
@@ -719,7 +937,23 @@ def is_nearest_outlet_request(text: str) -> bool:
     if "near me" in clean and has_outlet_context:
         return True
 
-    if any(word in clean for word in ["recommend", "suggest", "pick", "choose"]) and has_outlet_context:
+    recommendation_words = [
+        "recommend",
+        "recommended",
+        "recomend",
+        "reccomend",
+        "reccomed",
+        "suggest",
+        "pick",
+        "choose",
+    ]
+
+    if any(word in clean for word in recommendation_words) and has_outlet_context:
+        return True
+
+    if any(word in clean for word in recommendation_words) and any(
+        word in clean for word in ["near", "nearest", "closest", "home", "house", "location"]
+    ):
         return True
 
     if has_outlet_context and any(phrase in clean for phrase in ["should i go", "should i visit", "which one"]):
