@@ -3977,6 +3977,9 @@ def health():
             "inactivity_checker_started": INACTIVITY_THREAD_STARTED,
             "active_inactivity_chats": len(INACTIVITY_STATE),
             "schedule_file": SCHEDULE_FILE,
+            "chatlog_enabled": CHATLOG_ENABLED,
+            "chatlog_dir": os.path.abspath(CHATLOG_DIR),
+            "chatlog_dir_exists": os.path.isdir(CHATLOG_DIR),
         }
     )
 
@@ -4080,7 +4083,11 @@ def debug_chatlogs():
                     stat.st_mtime,
                     ZoneInfo("Asia/Singapore"),
                 ).isoformat(),
-                "view_path": f"/debug/chatlog?chat_id={chat_id}",
+                "view_url": (
+                    f"/debug/chatlog?chat_id={chat_id}&token={request.args.get('token', '')}"
+                    if request.args.get("token", "")
+                    else f"/debug/chatlog?chat_id={chat_id}"
+                ),
             }
         )
 

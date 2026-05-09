@@ -42,3 +42,38 @@ test_bot.py
 requirements.txt
 .env
 templates/index.html
+```
+
+---
+
+## Chat Logs
+
+Chat logs are saved into the `chatlogs/` folder as one `.jsonl` file per Telegram chat.
+
+Example:
+
+```bash
+chatlogs/123456789.jsonl
+```
+
+Each line is one incoming or outgoing message/event.
+
+To check all chatlog files on the deployed app:
+
+```bash
+/debug/chatlogs?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+To view one chat:
+
+```bash
+/debug/chatlog?token=YOUR_DEBUG_ROUTE_TOKEN&chat_id=CHAT_ID
+```
+
+To test log writing without Telegram:
+
+```bash
+/debug/test-chatlog?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+Important: set `DEBUG_ROUTE_TOKEN` in Render or your `.env`, otherwise these debug links are blocked.
