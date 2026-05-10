@@ -1,483 +1,403 @@
-# Jal Yoga Singapore Telegram AI Assistant
+# Jal Yoga Telegram AI Chatbot
 
-An AI-powered customer-service assistant built for Jal Yoga Singapore. The system helps customers get fast answers through Telegram, supports booking-related flows, recommends the nearest studio, and passes complex cases to a real Customer Service team.
+A Telegram AI customer-service chatbot for Jal Yoga Singapore.
 
-## Project Summary
+This bot helps customers with trial bookings, membership enquiries, class cancellation questions, studio information, class schedule questions, customer-service handoff, multilingual replies, and chatlog tracking.
 
-This project is a practical AI chatbot for a real service business. It combines a Flask backend, Telegram webhook integration, OpenAI responses, structured business knowledge, schedule data, chat logging, and human handoff tools.
+---
 
-The goal is simple: reduce repetitive customer-service workload while keeping customers supported when a human response is needed.
+## Project Overview
 
-## Business Problem
+This project is built with:
 
-Fitness and wellness studios receive many repeated enquiries every day:
+- Python
+- Flask
+- Telegram Bot API
+- OpenAI
+- Render
+- GitHub
+- `knowledge.txt` as the editable knowledge base
 
-- Where are your outlets?
-- Which outlet is nearest to me?
-- What is the class schedule?
-- How do I book a trial?
-- What is the cancellation policy?
-- Can I speak to Customer Service?
+The bot is designed to provide 24/7 automated replies for common Jal Yoga enquiries, while still allowing users to speak to Customer Service when needed.
 
-Without automation, staff spend time answering the same questions manually. This bot handles common enquiries immediately and routes more sensitive or account-specific requests to the correct support team.
+---
 
-## Key Capabilities
+## Main Features
 
-- Telegram customer chatbot
-- AI replies based on approved Jal Yoga knowledge
-- Trial class enquiry flow
-- Current member support flow
-- Studio location and operating enquiry support
-- Nearest outlet recommendation based on area or postal code
-- Class schedule replies from `schedule.json`
-- Corporate and partnership enquiry collection
-- Refer-a-friend flow
-- Staff Hub request flow
-- Customer Service handoff through Telegram
-- Live support reply commands
-- Local and deployed chat logs
-- Debug routes for operations and support
-- File ingestion tool for updating the knowledge base
+### Telegram Chatbot
 
-## How It Works
+The bot can reply to users through Telegram using a webhook.
 
-```mermaid
-flowchart LR
-    A[Customer on Telegram] --> B[Telegram Webhook]
-    B --> C[Flask App]
-    C --> D[Conversation Logic]
-    D --> E[knowledge.txt]
-    D --> F[schedule.json]
-    D --> G[OpenAI API]
-    D --> H[Chat Logs]
-    D --> I[Customer Service Telegram Chat]
-    I --> C
-    C --> A
+Users can type:
+
+```text
+hi
 ```
 
-The app receives Telegram messages through a webhook. It checks the customer message, continues any active flow, looks up approved knowledge or schedule data, uses OpenAI when needed, and sends a reply back to Telegram. If the request needs a human, it forwards the case to Customer Service.
+The bot will show the main menu:
 
-## Technology Stack
-
-| Area | Technology |
-| --- | --- |
-| Backend | Python, Flask |
-| AI | OpenAI API |
-| Messaging | Telegram Bot API |
-| Deployment | Render-compatible, Gunicorn |
-| Data files | `knowledge.txt`, `schedule.json`, Google Sheets chat logs |
-| File processing | PyMuPDF, python-docx, openpyxl, python-pptx |
-
-## Main User Flows
-
-### Customer Menu
-
-Customers can choose from:
-
+```text
 1. Schedule a Trial
-2. Current Member Support
-3. General Jal Yoga Enquiry
-4. Corporate / Partnerships
+2. I’m a current member
+3. I’d like to find out more about Jal Yoga
+4. Corporate/Partnerships
 5. Staff Hub
+```
 
-They can also type natural language questions instead of selecting menu numbers.
+---
 
-### Trial Booking Support
+### AI Replies Using OpenAI
 
-The bot asks for the preferred outlet, customer name, and trial goal. If the customer is unsure which outlet to visit, the bot can suggest the likely nearest outlet based on location, MRT station, area, or postal code.
+The bot uses OpenAI to answer customer questions based on:
 
-### Schedule Replies
+1. `knowledge.txt`
+2. Render environment variables
+3. Recent chat context
 
-The bot reads `schedule.json` and can answer schedule-related questions such as:
+The bot is instructed not to invent prices, promotions, schedules, trainers, policies, or outlet information.
 
-- classes today
-- classes tomorrow
-- schedule at a selected outlet
-- trial class timings
+---
+
+### Trial Booking Flow
+
+The bot can guide users through a trial booking flow.
+
+It can ask for:
+
+- Preferred outlet
+- Full name
+- Fitness goal
+
+Then it creates a trial booking summary for Customer Service.
+
+---
+
+### Current Member Flow
+
+The bot supports current member enquiries such as:
+
+- Class cancellation
+- Membership suspension
+- Class booking help
+- Refer a friend
+
+---
+
+### General Enquiry Flow
+
+The bot can help users ask about:
+
+- Studio locations and operating hours
+- Class types
+- Events and retreats
+
+---
 
 ### Customer Service Handoff
 
-When a request is too specific, uncertain, or sensitive, the bot sends a summary to Customer Service. Staff can reply from Telegram using support commands or direct reply workflows.
+When the bot is unsure or the user asks to speak to Customer Service, it can create a handoff summary.
 
-## Human Support Commands
-
-Customer Service can reply from the configured support Telegram chat:
+Example:
 
 ```text
-/reply CUSTOMER_CHAT_ID your message
-/close CUSTOMER_CHAT_ID
+I’ll pass this to our Customer Service team.
+
+Summary:
+- Topic: Customer Service Request
+- Outlet: Katong
+- Message: I need help with my booking
 ```
 
-This allows staff to continue a customer conversation without needing to access the server directly.
+The bot can route the handoff to:
+
+- Main Customer Service Telegram chat
+- Outlet-specific Telegram chat IDs
+
+---
+
+### Multilingual Support
+
+The bot can detect and reply in different languages where possible.
+
+Supported examples:
+
+- English
+- Chinese
+- Malay
+- Tamil
+- Thai
+- Portuguese
+- Spanish
+- French
+- Japanese
+- Korean
+
+---
+
+### Chatlog System
+
+The bot saves Telegram conversations into chatlog files.
+
+Main chatlog file:
+
+```text
+chat_logs.jsonl
+```
+
+Per-customer chatlog folder:
+
+```text
+chatlogs/
+```
+
+Example chatlog entry:
+
+```json
+{
+  "time_sg": "2026-05-10T12:00:00+08:00",
+  "chat_id": "123456789",
+  "direction": "incoming",
+  "role": "customer",
+  "message": "hi",
+  "meta": {
+    "platform": "telegram"
+  }
+}
+```
+
+---
 
 ## Project Structure
 
-| File or folder | Purpose |
-| --- | --- |
-| `app.py` | Main application, Telegram webhook, conversation flows, OpenAI calls, handoff logic, schedules, and debug routes. |
-| `knowledge.txt` | Approved Jal Yoga information used by the bot. |
-| `schedule.json` | Class schedule data. |
-| `auto_file_to_knowledge.py` | Imports uploaded file contents into `knowledge.txt`. |
-| `templates/index.html` | Basic web homepage for the app. |
-| `requirements.txt` | Python dependencies. |
-| `uploads/` | Folder for files that should be processed into the knowledge base. |
-| `chatlogs/` | Optional local per-chat JSONL logs, ignored by Git. |
+```text
+.
+├── app.py
+├── knowledge.txt
+├── schedule.json
+├── requirements.txt
+├── README.md
+├── .env
+├── .gitignore
+├── chat_logs.jsonl
+├── chatlogs/
+└── templates/
+```
 
-## Complete Setup Checklist
-
-Follow these steps in order to make the full system work.
-
-### 1. Install Python
-
-Install Python 3.10 or newer from:
+Optional helper files:
 
 ```text
-https://www.python.org/downloads/
+.
+├── auto_render_chatlog.py
+├── auto_knowledge.py
+└── uploads/
 ```
 
-During installation, tick:
+---
 
-```text
-Add python.exe to PATH
+## File Explanation
+
+### `app.py`
+
+Main chatbot application.
+
+It handles:
+
+- Flask web server
+- Telegram webhook
+- OpenAI replies
+- Customer menu flow
+- Trial booking flow
+- Current member flow
+- Customer Service handoff
+- Chatlog saving
+- Debug routes
+- Schedule loading
+- Knowledge file loading
+
+---
+
+### `knowledge.txt`
+
+This is the bot’s editable knowledge base.
+
+Put Jal Yoga information here, such as:
+
+- Studio locations
+- Trial class details
+- Membership policies
+- Class types
+- Prices
+- Promotions
+- Events
+- Cancellation policies
+- Customer Service information
+
+The bot should use this file as the main source of truth.
+
+---
+
+### `schedule.json`
+
+Optional class schedule file.
+
+Use this file if you want the bot to answer schedule questions from structured data.
+
+---
+
+### `.env`
+
+Stores private keys and tokens for local development.
+
+Do not upload this file to GitHub.
+
+---
+
+### `requirements.txt`
+
+Stores the Python packages needed to run the bot.
+
+---
+
+## Requirements
+
+You need:
+
+- Python 3.10 or above
+- Telegram bot token
+- OpenAI API key
+- GitHub account
+- Render account
+
+---
+
+## Installation
+
+### 1. Download or clone the project
+
+```bash
+git clone https://github.com/YOUR-USERNAME/YOUR-REPO-NAME.git
+cd YOUR-REPO-NAME
 ```
 
-Check that Python works:
+---
 
-```powershell
-python --version
+### 2. Create a virtual environment
+
+Windows:
+
+```bash
+python -m venv venv
+venv\Scripts\activate
 ```
 
-If this opens the Microsoft Store, disable the Microsoft Store Python shortcut in Windows settings or reinstall Python from `python.org`.
+Mac/Linux:
 
-### 2. Open the Project Folder
-
-Open PowerShell in this folder:
-
-```text
-c:\Users\Ben Ong\OneDrive\Desktop\TO BE SAFE
+```bash
+python3 -m venv venv
+source venv/bin/activate
 ```
 
-Or in VS Code:
+---
 
-```text
-File -> Open Folder -> TO BE SAFE
-```
+### 3. Install required packages
 
-### 3. Create the Virtual Environment
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-If PowerShell blocks activation, run:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-Then activate again:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-### 4. Install Required Packages
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-This installs Flask, OpenAI, Telegram request support, file readers, and the tools needed by the helper scripts.
-
-### 5. Select the Correct Python Interpreter in VS Code
-
-In VS Code:
-
-```text
-Ctrl + Shift + P
-Python: Select Interpreter
-Choose .venv\Scripts\python.exe
-```
-
-This fixes yellow warning lines under imports such as `flask`, `openai`, `dotenv`, and `watchdog`.
-
-### 6. Create the Telegram Bot
-
-In Telegram:
-
-1. Open `@BotFather`.
-2. Send `/newbot`.
-3. Choose the bot name and username.
-4. Copy the bot token.
-
-The token goes into:
-
-```env
-TELEGRAM_BOT_TOKEN=
-```
-
-### 7. Create an OpenAI API Key
-
-Create an OpenAI API key and add it to:
-
-```env
-OPENAI_API_KEY=
-```
-
-The model is configured with:
-
-```env
-OPENAI_MODEL=gpt-5.4-mini
-```
-
-### 8. Create the `.env` File
-
-Create a file called `.env` in the project root.
-
-Minimum local setup:
-
-```env
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-5.4-mini
-
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_SECRET_TOKEN=choose_any_private_random_text
-TELEGRAM_BOT_USERNAME=your_bot_username
-
-CUSTOMER_SERVICE_TELEGRAM_CHAT_ID=
-CUSTOMER_SERVICE_WHATSAPP_NUMBER=65xxxxxxxx
-
-DEBUG_ROUTE_TOKEN=choose_any_private_debug_token
-PORT=5000
-
-SCHEDULE_FILE=schedule.json
-OPT_OUT_FILE=telegram_opt_out_users.json
-
-CHATLOG_ENABLED=true
-GOOGLE_SHEET_ID=your_google_sheet_id
-GOOGLE_SHEET_WORKSHEET=Chat Logs
-GOOGLE_SERVICE_ACCOUNT_FILE=google-service-account.json
-GOOGLE_SERVICE_ACCOUNT_JSON=
-GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=
-CHATLOG_LOCAL_ENABLED=false
-CHATLOG_MAX_VIEW_LINES=300
-AUTO_START_INACTIVITY_CHECKER=true
-```
-
-Share the Google Sheet with the service account email as an Editor. For Render, use `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` instead of uploading a local credentials file.
-
-The Google Sheet header row should be:
-
-```text
-timestamp_sg | chat_id | chat_type | username | directions | role | message
-```
-
-Keep `.env` private. Do not upload real tokens, API keys, or service account files to GitHub.
-
-### 9. Test the Flask App Locally
-
-Run:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python app.py
-```
-
-Open:
-
-```text
-http://localhost:5000
-http://localhost:5000/health
-```
-
-The `/health` page should show whether OpenAI, Telegram, Customer Service, schedules, and chat logs are configured.
-
-### 10. Get the Customer Service Telegram Chat ID
-
-The bot needs a Customer Service chat ID if human handoff should work.
-
-For a private support chat:
-
-1. Send a message to the bot from the Customer Service Telegram account.
-2. Check the app logs or chat logs for the `chat_id`.
-3. Add that value to:
-
-```env
-CUSTOMER_SERVICE_TELEGRAM_CHAT_ID=
-```
-
-For a group support chat:
-
-1. Add the bot to the Telegram group.
-2. Send a message in the group.
-3. Check the app logs for the group `chat_id`.
-4. Add that value to `CUSTOMER_SERVICE_TELEGRAM_CHAT_ID`.
-
-Telegram group chat IDs are often negative numbers. That is normal.
-
-### 11. Deploy to Render
-
-Create a new Render Web Service and connect the project repository.
-
-Use these settings:
-
-```text
-Build command:
+```bash
 pip install -r requirements.txt
-
-Start command:
-gunicorn app:app
 ```
 
-Add the same environment variables from `.env` into Render's environment settings.
+---
 
-Important Render variables:
+## Recommended `requirements.txt`
+
+Create a file named:
+
+```text
+requirements.txt
+```
+
+Paste this inside:
+
+```txt
+Flask
+requests
+python-dotenv
+openai
+gunicorn
+watchdog
+pymupdf
+python-docx
+openpyxl
+python-pptx
+```
+
+---
+
+## Environment Variables
+
+Create a file named:
+
+```text
+.env
+```
+
+Paste this inside and replace the values:
 
 ```env
-OPENAI_API_KEY=
+OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=gpt-5.4-mini
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_SECRET_TOKEN=
-CUSTOMER_SERVICE_TELEGRAM_CHAT_ID=
-CUSTOMER_SERVICE_WHATSAPP_NUMBER=
-DEBUG_ROUTE_TOKEN=
+
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+TELEGRAM_SECRET_TOKEN=your_random_secret_token_here
+TELEGRAM_BOT_USERNAME=your_bot_username_here
+
+CUSTOMER_SERVICE_WHATSAPP_NUMBER=6590000000
+CUSTOMER_SERVICE_TELEGRAM_CHAT_ID=your_customer_service_telegram_chat_id_here
+
+DEBUG_ROUTE_TOKEN=your_private_debug_token_here
+
+PORT=5000
+OPT_OUT_FILE=telegram_opt_out_users.json
+SCHEDULE_FILE=schedule.json
+
 CHATLOG_ENABLED=true
-AUTO_START_INACTIVITY_CHECKER=true
+CHATLOG_DIR=chatlogs
+CHATLOG_FILE=chat_logs.jsonl
+CHATLOG_MAX_VIEW_LINES=300
 ```
 
-After deployment, open:
+---
 
-```text
-https://your-app.onrender.com/health
+## Outlet-Specific Environment Variables
+
+Use these if each outlet has its own Telegram Customer Service chat.
+
+```env
+ALEXANDRA_TELEGRAM_CHAT_ID=
+KATONG_TELEGRAM_CHAT_ID=
+KOVAN_TELEGRAM_CHAT_ID=
+UPPER_BUKIT_TIMAH_TELEGRAM_CHAT_ID=
+WOODLANDS_TELEGRAM_CHAT_ID=
 ```
 
-### 12. Set the Telegram Webhook
+Use these if each outlet has its own WhatsApp number.
 
-Telegram must be told where to send messages.
-
-In PowerShell:
-
-```powershell
-$botToken = "YOUR_TELEGRAM_BOT_TOKEN"
-$webhookUrl = "https://your-app.onrender.com/telegram/webhook"
-$secret = "YOUR_TELEGRAM_SECRET_TOKEN"
-
-Invoke-RestMethod `
-  -Uri "https://api.telegram.org/bot$botToken/setWebhook" `
-  -Method Post `
-  -Body @{
-    url = $webhookUrl
-    secret_token = $secret
-  }
+```env
+ALEXANDRA_WHATSAPP_NUMBER=
+KATONG_WHATSAPP_NUMBER=
+KOVAN_WHATSAPP_NUMBER=
+UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER=
+WOODLANDS_WHATSAPP_NUMBER=
 ```
 
-Check webhook status:
+If outlet-specific values are empty, the bot will use the main Customer Service contact.
 
-```powershell
-Invoke-RestMethod -Uri "https://api.telegram.org/bot$botToken/getWebhookInfo"
-```
+---
 
-The webhook URL should be:
+## Run Locally
 
-```text
-https://your-app.onrender.com/telegram/webhook
-```
+Run this in VS Code terminal:
 
-### 13. Test the Live Telegram Bot
-
-Open the Telegram bot and send:
-
-```text
-/start
-menu
-which outlet is near Tampines?
-I want to book a trial
-customer service
-```
-
-Check Render logs if Telegram does not reply.
-
-### 14. Test Chat Logs
-
-Open:
-
-```text
-https://your-app.onrender.com/debug/test-chatlog?token=YOUR_DEBUG_ROUTE_TOKEN
-```
-
-Then check:
-
-```text
-https://your-app.onrender.com/debug/chat-log-file?token=YOUR_DEBUG_ROUTE_TOKEN&limit=100
-```
-
-### 15. Update Knowledge
-
-Main bot information is stored in:
-
-```text
-knowledge.txt
-```
-
-After editing `knowledge.txt`, restart the app or redeploy Render so the bot loads the latest version.
-
-To import files automatically:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python auto_file_to_knowledge.py
-```
-
-Then place files into:
-
-```text
-uploads/
-```
-
-Review imported content before relying on it.
-
-### 16. Update Schedule
-
-Class schedule data is stored in:
-
-```text
-schedule.json
-```
-
-After editing the schedule, restart locally or redeploy on Render.
-
-### 17. Final Working Check
-
-Before showing the project to a company, confirm:
-
-- `python app.py` opens `/health`.
-- Render deploy is successful.
-- `/health` on Render shows the correct configuration.
-- Telegram webhook is set.
-- Telegram bot replies to `/start`.
-- Trial flow works.
-- Nearest outlet question works.
-- Schedule question works.
-- Customer Service handoff works.
-- Chat logs are being written.
-- No real secrets are committed to GitHub.
-
-## Local Demo
-
-Install dependencies:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-Run the Flask app locally:
-
-```powershell
+```bash
 python app.py
 ```
 
@@ -485,12 +405,83 @@ Then open:
 
 ```text
 http://localhost:5000
-http://localhost:5000/health
 ```
 
-## Environment Variables
+---
 
-The app uses environment variables for secrets and deployment settings:
+## Telegram Webhook Setup
+
+After deploying to Render, set your Telegram webhook.
+
+Use this link format:
+
+```text
+https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/setWebhook?url=https://YOUR-RENDER-APP.onrender.com/telegram/webhook&secret_token=YOUR_TELEGRAM_SECRET_TOKEN
+```
+
+Example:
+
+```text
+https://api.telegram.org/bot123456:ABCDEF/setWebhook?url=https://jalyoga-bot.onrender.com/telegram/webhook&secret_token=mysecret123
+```
+
+Do not share your real Telegram bot token.
+
+---
+
+## Render Deployment
+
+### 1. Push project to GitHub
+
+```bash
+git add .
+git commit -m "Upload Jal Yoga Telegram chatbot"
+git push
+```
+
+---
+
+### 2. Create Render Web Service
+
+On Render:
+
+1. Click **New**
+2. Click **Web Service**
+3. Connect your GitHub repository
+4. Choose your branch
+5. Choose Python environment
+
+---
+
+### 3. Build Command
+
+Use this:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### 4. Start Command
+
+Use this:
+
+```bash
+gunicorn app:app
+```
+
+---
+
+### 5. Add Environment Variables on Render
+
+Go to:
+
+```text
+Render Dashboard > Your Service > Environment
+```
+
+Add these:
 
 ```env
 OPENAI_API_KEY=
@@ -500,27 +491,22 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_SECRET_TOKEN=
 TELEGRAM_BOT_USERNAME=
 
-CUSTOMER_SERVICE_TELEGRAM_CHAT_ID=
 CUSTOMER_SERVICE_WHATSAPP_NUMBER=
+CUSTOMER_SERVICE_TELEGRAM_CHAT_ID=
 
 DEBUG_ROUTE_TOKEN=
-PORT=5000
 
-SCHEDULE_FILE=schedule.json
+PORT=5000
 OPT_OUT_FILE=telegram_opt_out_users.json
+SCHEDULE_FILE=schedule.json
 
 CHATLOG_ENABLED=true
-GOOGLE_SHEET_ID=
-GOOGLE_SHEET_WORKSHEET=Chat Logs
-GOOGLE_SERVICE_ACCOUNT_FILE=google-service-account.json
-GOOGLE_SERVICE_ACCOUNT_JSON=
-GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=
-CHATLOG_LOCAL_ENABLED=false
+CHATLOG_DIR=chatlogs
+CHATLOG_FILE=chat_logs.jsonl
 CHATLOG_MAX_VIEW_LINES=300
-AUTO_START_INACTIVITY_CHECKER=true
 ```
 
-Optional outlet-specific support settings:
+Optional outlet variables:
 
 ```env
 ALEXANDRA_TELEGRAM_CHAT_ID=
@@ -536,118 +522,517 @@ UPPER_BUKIT_TIMAH_WHATSAPP_NUMBER=
 WOODLANDS_WHATSAPP_NUMBER=
 ```
 
-## Deployment Overview
+After adding environment variables, redeploy the Render service.
 
-The app is ready for deployment on Render or another Python web host.
+---
 
-Recommended Render settings:
+## Debug Routes
 
-```text
-Build command:
-pip install -r requirements.txt
+All debug routes should use your `DEBUG_ROUTE_TOKEN`.
 
-Start command:
-gunicorn app:app
-```
-
-After deployment, set the Telegram webhook:
-
-```powershell
-$botToken = "YOUR_TELEGRAM_BOT_TOKEN"
-$webhookUrl = "https://your-app.onrender.com/telegram/webhook"
-$secret = "YOUR_TELEGRAM_SECRET_TOKEN"
-
-Invoke-RestMethod `
-  -Uri "https://api.telegram.org/bot$botToken/setWebhook" `
-  -Method Post `
-  -Body @{
-    url = $webhookUrl
-    secret_token = $secret
-  }
-```
-
-## Operational Tools
-
-### Health Check
+Format:
 
 ```text
-/health
+https://YOUR-RENDER-APP.onrender.com/debug/ROUTE?token=YOUR_DEBUG_ROUTE_TOKEN
 ```
 
-Shows whether OpenAI, Telegram, Customer Service, schedule data, and chat logging are configured.
+---
 
-### Debug Routes
-
-Debug routes require `DEBUG_ROUTE_TOKEN`:
+### View chatlog file
 
 ```text
-/debug/outlets?token=YOUR_DEBUG_ROUTE_TOKEN
-/debug/schedule?token=YOUR_DEBUG_ROUTE_TOKEN
-/debug/trial-bookings?token=YOUR_DEBUG_ROUTE_TOKEN
-/debug/chatlogs?token=YOUR_DEBUG_ROUTE_TOKEN
-/debug/chatlog?token=YOUR_DEBUG_ROUTE_TOKEN&chat_id=CHAT_ID
-/debug/chat-log-file?token=YOUR_DEBUG_ROUTE_TOKEN&limit=100
-/debug/test-chatlog?token=YOUR_DEBUG_ROUTE_TOKEN
+https://YOUR-RENDER-APP.onrender.com/debug/chat-log-file?token=YOUR_DEBUG_ROUTE_TOKEN
 ```
 
-## Updating Knowledge
+---
 
-The bot's approved information lives in `knowledge.txt`.
+### View all chatlogs
 
-To manually update the bot:
-
-1. Edit `knowledge.txt`.
-2. Keep information factual and confirmed.
-3. Restart the app after changes.
-
-To import documents:
-
-```powershell
-python auto_file_to_knowledge.py
+```text
+https://YOUR-RENDER-APP.onrender.com/debug/chatlogs?token=YOUR_DEBUG_ROUTE_TOKEN
 ```
 
-Then place supported files into:
+---
+
+### View one customer chatlog
+
+```text
+https://YOUR-RENDER-APP.onrender.com/debug/chatlog?chat_id=CUSTOMER_CHAT_ID&token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+---
+
+### Test chatlog writing
+
+```text
+https://YOUR-RENDER-APP.onrender.com/debug/test-chatlog?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+---
+
+### Check config
+
+```text
+https://YOUR-RENDER-APP.onrender.com/debug/config?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+---
+
+### Check outlets
+
+```text
+https://YOUR-RENDER-APP.onrender.com/debug/outlets?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+---
+
+### Check schedule
+
+```text
+https://YOUR-RENDER-APP.onrender.com/debug/schedule?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+---
+
+### Check trial bookings
+
+```text
+https://YOUR-RENDER-APP.onrender.com/debug/trial-bookings?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+---
+
+## Chatlog Auto Update in VS Code
+
+When the bot runs on Render, the chatlog is saved on Render, not directly inside VS Code.
+
+To auto-download the Render chatlog into VS Code, create a file named:
+
+```text
+auto_render_chatlog.py
+```
+
+Paste this:
+
+```python
+import json
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime
+
+# Change these 2 values
+RENDER_URL = "https://YOUR-RENDER-APP.onrender.com"
+DEBUG_ROUTE_TOKEN = "YOUR_DEBUG_ROUTE_TOKEN"
+
+REFRESH_SECONDS = 5
+
+JSON_OUTPUT_FILE = "render_chat_log.json"
+TXT_OUTPUT_FILE = "render_chat_log.txt"
+
+
+def download_chatlog():
+    url = (
+        f"{RENDER_URL.rstrip('/')}/debug/chat-log-file"
+        f"?token={urllib.parse.quote(DEBUG_ROUTE_TOKEN)}"
+        f"&limit=300"
+    )
+
+    with urllib.request.urlopen(url, timeout=20) as response:
+        data = json.loads(response.read().decode("utf-8"))
+
+    with open(JSON_OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    entries = data.get("entries", [])
+
+    with open(TXT_OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write("RENDER CHATLOG AUTO UPDATE\n")
+        f.write(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("=" * 60 + "\n\n")
+
+        if not entries:
+            f.write("No chat messages yet.\n")
+        else:
+            for entry in entries:
+                time_sg = entry.get("time_sg", "")
+                chat_id = entry.get("chat_id", "")
+                direction = entry.get("direction", "")
+                role = entry.get("role", "")
+                message = entry.get("message", "")
+
+                f.write(f"[{time_sg}]\n")
+                f.write(f"Chat ID: {chat_id}\n")
+                f.write(f"{direction.upper()} | {role}: {message}\n")
+                f.write("-" * 60 + "\n")
+
+    print(f"Updated {TXT_OUTPUT_FILE} at {datetime.now().strftime('%H:%M:%S')}")
+
+
+print("Auto Render chatlog started.")
+print("Press CTRL + C to stop.\n")
+
+while True:
+    try:
+        download_chatlog()
+    except Exception as e:
+        print("Error downloading chatlog:", e)
+
+    time.sleep(REFRESH_SECONDS)
+```
+
+Run it:
+
+```bash
+python auto_render_chatlog.py
+```
+
+Then open:
+
+```text
+render_chat_log.txt
+```
+
+Now the file will refresh every 5 seconds.
+
+---
+
+## Auto Knowledge Importer
+
+Optional helper file:
+
+```text
+auto_knowledge.py
+```
+
+This file watches the `uploads/` folder and automatically adds supported file content into `knowledge.txt`.
+
+Supported file types:
+
+```text
+.pdf
+.txt
+.md
+.docx
+.csv
+.xlsx
+.pptx
+.json
+```
+
+Run it:
+
+```bash
+python auto_knowledge.py
+```
+
+Then drop files into:
 
 ```text
 uploads/
 ```
 
-Supported formats:
+The extracted text will be added into:
 
 ```text
-.pdf, .txt, .md, .docx, .csv, .xlsx, .pptx, .json
+knowledge.txt
 ```
 
-Imported text should be reviewed before being treated as final business knowledge.
+Always check and clean the imported content before using it in the final bot.
 
-## Privacy and Safety
+---
 
-The bot is designed with basic customer-data safety in mind:
+## Recommended `.gitignore`
 
-- Secrets are loaded from environment variables.
-- `.env`, chat logs, and generated local files are ignored by Git.
-- The bot avoids asking for NRIC, passport numbers, CVV, OTP, passwords, bank account details, or medical documents.
-- Chat logs lightly redact emails, OTP-style phrases, and long ID/card-style numbers.
-- Debug routes require a private token.
-- Uncertain or sensitive questions are handed to Customer Service.
+Create a file named:
 
-## What This Demonstrates
+```text
+.gitignore
+```
 
-This project demonstrates the ability to:
+Paste this:
 
-- Build a real AI assistant around business workflows.
-- Integrate Telegram, Flask, and OpenAI.
-- Design structured chatbot flows instead of relying only on free-form AI.
-- Add human handoff for operational reliability.
-- Use local files as a lightweight knowledge and schedule system.
-- Build debugging and logging tools for a deployed chatbot.
-- Prepare an app for real deployment and business review.
+```gitignore
+.env
 
-## Possible Future Improvements
+__pycache__/
+*.pyc
+venv/
+.venv/
 
-- Admin dashboard for editing schedules and knowledge.
-- Database storage for chat history and bookings.
-- Authentication for support staff.
-- Analytics for common customer enquiries.
-- Rich Telegram buttons instead of text-only menus.
-- CRM or booking-system integration.
+chatlogs/
+chat_logs.jsonl
+chat_logs.txt
+render_chat_log.json
+render_chat_log.txt
+render_chat_logs.json
+render_chat_logs.txt
+
+telegram_opt_out_users.json
+processed_files.json
+uploads/
+
+.DS_Store
+```
+
+Do not upload `.env`, chatlogs, or private tokens to GitHub.
+
+---
+
+## Common GitHub Commands
+
+Check current status:
+
+```bash
+git status
+```
+
+Add all changes:
+
+```bash
+git add .
+```
+
+Save changes:
+
+```bash
+git commit -m "Update Jal Yoga chatbot"
+```
+
+Push to GitHub:
+
+```bash
+git push
+```
+
+---
+
+## Updating GitHub After Changes
+
+Use this every time you update your code:
+
+```bash
+git add .
+git commit -m "Update chatbot files"
+git push
+```
+
+---
+
+## Remove `.env` from GitHub Tracking
+
+If `.env` was accidentally added to Git:
+
+```bash
+git rm --cached .env
+git add .gitignore
+git commit -m "Remove env file from tracking"
+git push
+```
+
+After that, reset your exposed API keys and tokens.
+
+---
+
+## Example Bot Conversation
+
+User:
+
+```text
+hi
+```
+
+Bot:
+
+```text
+Namaste! Thank you for reaching out to Jal Yoga. 🙏
+
+To help us handle your request as quickly as possible, please let us know what you're looking for today:
+
+1. Schedule a Trial
+2. I’m a current member
+3. I’d like to find out more about Jal Yoga
+4. Corporate/Partnerships
+5. Staff Hub
+```
+
+User:
+
+```text
+1
+```
+
+Bot:
+
+```text
+Sure — let’s schedule your trial class. 🙏
+
+Which studio would you prefer?
+
+1. Alexandra
+2. Katong
+3. Kovan
+4. Upper Bukit Timah
+5. Woodlands
+```
+
+User:
+
+```text
+Katong
+```
+
+Bot:
+
+```text
+May I have your full name?
+```
+
+User:
+
+```text
+Ben Ong
+```
+
+Bot:
+
+```text
+Thanks, Ben Ong — what’s your fitness goal for the trial?
+```
+
+---
+
+## Troubleshooting
+
+### Bot does not reply
+
+Check:
+
+1. Render service is running
+2. Telegram webhook is set correctly
+3. `TELEGRAM_BOT_TOKEN` is correct
+4. `TELEGRAM_SECRET_TOKEN` matches the webhook secret
+5. Render logs show incoming Telegram updates
+
+---
+
+### OpenAI does not reply
+
+Check:
+
+1. `OPENAI_API_KEY` is set correctly
+2. `OPENAI_MODEL` is set correctly
+3. Render environment variables are saved
+4. Render service was redeployed
+5. OpenAI API key has access
+
+---
+
+### Chatlog does not update
+
+Check:
+
+1. `CHATLOG_ENABLED=true`
+2. The bot is receiving Telegram messages
+3. Open this route:
+
+```text
+/debug/test-chatlog?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+Then open:
+
+```text
+/debug/chat-log-file?token=YOUR_DEBUG_ROUTE_TOKEN
+```
+
+---
+
+### Render says `requirements.txt` missing
+
+Make sure this file exists:
+
+```text
+requirements.txt
+```
+
+Then push it to GitHub:
+
+```bash
+git add requirements.txt
+git commit -m "Add requirements file"
+git push
+```
+
+---
+
+### Yellow squiggly lines in VS Code
+
+Install missing packages:
+
+```bash
+pip install requests python-dotenv flask openai watchdog pymupdf python-docx openpyxl python-pptx
+```
+
+Then select the correct Python interpreter:
+
+```text
+CTRL + SHIFT + P
+Python: Select Interpreter
+```
+
+---
+
+## Security Notes
+
+Never upload these files to GitHub:
+
+```text
+.env
+chat_logs.jsonl
+chat_logs.txt
+chatlogs/
+render_chat_log.json
+render_chat_log.txt
+telegram_opt_out_users.json
+processed_files.json
+uploads/
+```
+
+Keep these secret:
+
+- OpenAI API key
+- Telegram bot token
+- Telegram secret token
+- Debug route token
+- Customer Service chat IDs
+
+---
+
+## Project Goal
+
+The goal of this project is to provide Jal Yoga customers with a 24/7 Telegram AI assistant that can answer common enquiries, guide users through structured flows, support trial bookings, and hand off complex questions to Customer Service.
+
+---
+
+## Current Status
+
+Current version includes:
+
+- Telegram webhook
+- OpenAI customer-service replies
+- `knowledge.txt` support
+- Trial booking flow
+- Current member flow
+- General enquiry flow
+- Customer Service handoff
+- Multilingual reply support
+- Chatlog saving
+- Render deployment support
+- Debug routes for testing
+
+---
+
+## Author
+
+Created for a Jal Yoga chatbot project.
