@@ -3122,6 +3122,9 @@ SCHEDULE_CONTEXT_PATTERNS = [
 SCHEDULE_FUZZY_PHRASES = phrase_list(
     "schedule|schdule|schedle|schedual|secdule|scedule|scehdule|shedule|skedule|timetable|timetabel|timetble|time table|class schedule|class timing|class timetable"
 )
+SCHEDULE_OUTLET_PROMPT_MARKER = (
+    "Please reply with an outlet number or outlet name if you want to see only one outlet:"
+)
 
 
 def is_schedule_request(text: str) -> bool:
@@ -3137,6 +3140,30 @@ def is_schedule_request(text: str) -> bool:
         or any(re.search(pattern, clean, flags=re.IGNORECASE) for pattern in SCHEDULE_CONTEXT_PATTERNS)
         or fuzzy_phrase_match(text, SCHEDULE_FUZZY_PHRASES, threshold=0.76)
     )
+
+
+def is_outlet_number_choice(text: str) -> bool:
+    norm = normalize(text)
+
+    if not norm.isdigit():
+        return False
+
+    number = int(norm)
+    return 1 <= number <= len(studio_names())
+
+
+def has_open_schedule_outlet_prompt(chat_id: str) -> bool:
+    for item in reversed(CHAT_HISTORY.get(chat_id, [])[-10:]):
+        role = item.get("role", "")
+        content = item.get("content", "")
+
+        if role == "user":
+            return False
+
+        if role == "assistant" and SCHEDULE_OUTLET_PROMPT_MARKER in content:
+            return True
+
+    return False
 
 
 def load_schedule_data() -> dict:
@@ -3445,6 +3472,30 @@ def handle_schedule_outlet_flow(chat_id: str, text: str) -> str:
         text,
         lambda outlet: live_schedule_reply(chat_id, text, forced_outlet=outlet),
     )
+
+
+def handle_open_schedule_outlet_choice(chat_id: str, text: str) -> str:
+    if not is_outlet_number_choice(text):
+        return ""
+
+    if not has_open_schedule_outlet_prompt(chat_id):
+        return ""
+
+    return handle_schedule_outlet_flow(chat_id, text)
+
+
+def handle_schedule_request(chat_id: str, text: str) -> str:
+    if not is_schedule_request(text):
+        return ""
+
+    requested_outlet = detect_outlet_choice(text)
+
+    if requested_outlet:
+        clear_flow(chat_id)
+        return live_schedule_reply(chat_id, text, forced_outlet=requested_outlet)
+
+    set_flow(chat_id, "schedule_outlet")
+    return live_schedule_reply(chat_id, text)
 
 
 def handle_contact_outlet_flow(chat_id: str, text: str) -> str:
@@ -3959,6 +4010,11 @@ def handle_active_flow_stage(chat_id: str, text: str) -> str:
     ):
         return handle_nearest_outlet_request(chat_id, text)
 
+    schedule_outlet_reply = handle_open_schedule_outlet_choice(chat_id, text)
+
+    if schedule_outlet_reply:
+        return schedule_outlet_reply
+
     if stage.startswith("member_"):
         return handle_member_service_flow(chat_id, text)
 
@@ -4141,6 +4197,11 @@ def process_message(chat_id: str, user_text: str) -> str:
         reply = start_customer_service_flow(chat_id, text)
         return finish_reply(chat_id, text, reply)
 
+    schedule_reply = handle_schedule_request(chat_id, text)
+
+    if schedule_reply:
+        return finish_reply(chat_id, text, schedule_reply)
+
     flow_reply = handle_active_flow_stage(chat_id, text)
 
     if flow_reply:
@@ -4153,16 +4214,6 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_all_outlets_request(text):
         clear_flow(chat_id)
         return finish_reply(chat_id, text, studio_locations_text())
-
-    if is_schedule_request(text):
-        requested_outlet = detect_outlet_choice(text)
-
-        if requested_outlet:
-            reply = live_schedule_reply(chat_id, text, forced_outlet=requested_outlet)
-            return finish_reply(chat_id, text, reply)
-
-        reply = live_schedule_reply(chat_id, text)
-        return start_flow_reply(chat_id, text, "schedule_outlet", reply)
 
     if norm in {"1", "2", "3", "4", "5"}:
         set_flow(chat_id, "main_menu")
