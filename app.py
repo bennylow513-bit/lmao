@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import re
@@ -13,6 +14,13 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, render_template
 from openai import OpenAI
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+except Exception:
+    gspread = None
+    Credentials = None
 
 load_dotenv()
 
@@ -36,13 +44,20 @@ OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
 SCHEDULE_FILE = os.getenv("SCHEDULE_FILE", "schedule.json")
 
 # Chatlog settings
-# This saves every Telegram conversation into local .jsonl files.
-# On Render free/normal web services, local files can be wiped during redeploys.
-# For school/demo use this is okay; for production, connect this to a database later.
 CHATLOG_ENABLED = os.getenv("CHATLOG_ENABLED", "true").lower() not in {"0", "false", "no", "off"}
+CHATLOG_LOCAL_ENABLED = os.getenv("CHATLOG_LOCAL_ENABLED", "false").lower() not in {"0", "false", "no", "off"}
 CHATLOG_DIR = os.getenv("CHATLOG_DIR", "chatlogs")
 CHATLOG_FILE = os.getenv("CHATLOG_FILE", "chat_logs.jsonl")
 CHATLOG_MAX_VIEW_LINES = int(os.getenv("CHATLOG_MAX_VIEW_LINES", "300"))
+
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "").strip()
+GOOGLE_SHEET_WORKSHEET = os.getenv("GOOGLE_SHEET_WORKSHEET", "Chat Logs").strip() or "Chat Logs"
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_BASE64", "")
+GOOGLE_SERVICE_ACCOUNT_FILE = (
+    os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "")
+    or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+).strip()
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -64,6 +79,7 @@ INACTIVITY_STATE: Dict[str, Dict[str, object]] = {}
 USER_LANGUAGE: Dict[str, str] = {}
 LIVE_SUPPORT_CHATS: Dict[str, Dict[str, str]] = {}
 SUPPORT_ACTIVE_CUSTOMER: Dict[str, str] = {}
+CHATLOG_CHAT_META: Dict[str, Dict[str, str]] = {}
 
 INACTIVITY_WARNING_SECONDS = 600
 INACTIVITY_CLOSE_SECONDS = 1200
@@ -71,6 +87,9 @@ INACTIVITY_CHECK_SECONDS = 30
 INACTIVITY_THREAD_STARTED = False
 INACTIVITY_REMINDER_QUEUE = None
 CHATLOG_LOCK = threading.Lock()
+CHATLOG_SHEET_HEADERS = ["timestamp_sg", "chat_id", "chat_type", "username", "directions", "role", "message"]
+CHATLOG_SHEET = None
+GOOGLE_SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 # WORD LISTS
@@ -205,6 +224,173 @@ def redact_chatlog_text(text: str) -> str:
     return clean
 
 
+def chatlog_google_sheet_configured() -> bool:
+    return bool(
+        GOOGLE_SHEET_ID
+        and (
+            GOOGLE_SERVICE_ACCOUNT_JSON.strip()
+            or GOOGLE_SERVICE_ACCOUNT_JSON_BASE64.strip()
+            or GOOGLE_SERVICE_ACCOUNT_FILE
+        )
+    )
+
+
+def chatlog_storage_label() -> str:
+    destinations = []
+
+    if chatlog_google_sheet_configured():
+        destinations.append("google_sheet")
+
+    if CHATLOG_LOCAL_ENABLED:
+        destinations.append("local_file")
+
+    return "+".join(destinations) or "none"
+
+
+def load_google_service_account_info() -> Optional[Dict[str, Any]]:
+    if GOOGLE_SERVICE_ACCOUNT_JSON.strip():
+        return json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+
+    if GOOGLE_SERVICE_ACCOUNT_JSON_BASE64.strip():
+        decoded = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_JSON_BASE64).decode("utf-8")
+        return json.loads(decoded)
+
+    return None
+
+
+def build_google_credentials():
+    if Credentials is None:
+        raise RuntimeError("Install google-auth and gspread to write chat logs to Google Sheets.")
+
+    service_account_info = load_google_service_account_info()
+
+    if service_account_info:
+        return Credentials.from_service_account_info(
+            service_account_info,
+            scopes=GOOGLE_SHEETS_SCOPES,
+        )
+
+    if GOOGLE_SERVICE_ACCOUNT_FILE:
+        return Credentials.from_service_account_file(
+            GOOGLE_SERVICE_ACCOUNT_FILE,
+            scopes=GOOGLE_SHEETS_SCOPES,
+        )
+
+    raise RuntimeError("Google Sheets service account credentials are not configured.")
+
+
+def get_chatlog_sheet():
+    global CHATLOG_SHEET
+
+    if not chatlog_google_sheet_configured():
+        return None
+
+    if gspread is None:
+        raise RuntimeError("Install gspread to write chat logs to Google Sheets.")
+
+    if CHATLOG_SHEET is not None:
+        return CHATLOG_SHEET
+
+    client = gspread.authorize(build_google_credentials())
+    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+
+    try:
+        worksheet = spreadsheet.worksheet(GOOGLE_SHEET_WORKSHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(
+            title=GOOGLE_SHEET_WORKSHEET,
+            rows=1000,
+            cols=len(CHATLOG_SHEET_HEADERS),
+        )
+
+    existing_headers = worksheet.row_values(1)
+
+    if existing_headers[: len(CHATLOG_SHEET_HEADERS)] != CHATLOG_SHEET_HEADERS:
+        worksheet.update(values=[CHATLOG_SHEET_HEADERS], range_name="A1:G1")
+
+    CHATLOG_SHEET = worksheet
+    return CHATLOG_SHEET
+
+
+def build_chatlog_row(
+    chat_id: str,
+    direction: str,
+    role: str,
+    message: str,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    chat_id = str(chat_id)
+    meta = meta or {}
+    saved_meta = CHATLOG_CHAT_META.get(chat_id, {})
+    chat_type = str(meta.get("chat_type") or saved_meta.get("chat_type", ""))
+    username = str(
+        meta.get("username")
+        or meta.get("telegram_username")
+        or meta.get("telegram_first_name")
+        or saved_meta.get("username", "")
+    )
+    timestamp_sg = now_sg()
+
+    if chat_type or username:
+        CHATLOG_CHAT_META[chat_id] = {
+            "chat_type": chat_type,
+            "username": username,
+        }
+
+    return {
+        "timestamp_sg": timestamp_sg,
+        "time_sg": timestamp_sg,
+        "chat_id": chat_id,
+        "chat_type": chat_type,
+        "username": username,
+        "directions": direction,
+        "direction": direction,
+        "role": role,
+        "message": redact_chatlog_text(message),
+        "meta": meta,
+    }
+
+
+def chatlog_row_values(row: Dict[str, Any]) -> List[str]:
+    return [
+        row.get("timestamp_sg", "") or row.get("time_sg", ""),
+        row.get("chat_id", ""),
+        row.get("chat_type", ""),
+        row.get("username", ""),
+        row.get("directions", "") or row.get("direction", ""),
+        row.get("role", ""),
+        row.get("message", ""),
+    ]
+
+
+def append_google_sheet_chatlog(row: Dict[str, Any]) -> None:
+    worksheet = get_chatlog_sheet()
+
+    if worksheet is None:
+        return
+
+    worksheet.append_row(chatlog_row_values(row), value_input_option="RAW")
+
+
+def write_local_chatlog(row: Dict[str, Any]) -> None:
+    os.makedirs(CHATLOG_DIR, exist_ok=True)
+    safe_id = safe_chatlog_id(row.get("chat_id", ""))
+    per_chat_path = os.path.join(CHATLOG_DIR, f"{safe_id}.jsonl")
+    line = json.dumps(row, ensure_ascii=False) + "\n"
+
+    if CHATLOG_FILE:
+        chatlog_file_dir = os.path.dirname(CHATLOG_FILE)
+
+        if chatlog_file_dir:
+            os.makedirs(chatlog_file_dir, exist_ok=True)
+
+        with open(CHATLOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+
+    with open(per_chat_path, "a", encoding="utf-8") as f:
+        f.write(line)
+
+
 def write_chatlog(
     chat_id: str,
     direction: str,
@@ -212,44 +398,31 @@ def write_chatlog(
     message: str,
     meta: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Append one message/event into chat_logs.jsonl and chatlogs/<chat_id>.jsonl."""
+    """Append one message/event into the configured chat log destination."""
     if not CHATLOG_ENABLED:
         return
 
     try:
-        os.makedirs(CHATLOG_DIR, exist_ok=True)
-        safe_id = safe_chatlog_id(chat_id)
-        per_chat_path = os.path.join(CHATLOG_DIR, f"{safe_id}.jsonl")
-
-        row = {
-            "time_sg": now_sg(),
-            "chat_id": str(chat_id),
-            "direction": direction,
-            "role": role,
-            "message": redact_chatlog_text(message),
-            "meta": meta or {},
-        }
+        row = build_chatlog_row(chat_id, direction, role, message, meta)
 
         with CHATLOG_LOCK:
-            line = json.dumps(row, ensure_ascii=False) + "\n"
+            if chatlog_google_sheet_configured():
+                try:
+                    append_google_sheet_chatlog(row)
+                except Exception as e:
+                    print("GOOGLE SHEET CHATLOG WRITE ERROR:", str(e), flush=True)
 
-            if CHATLOG_FILE:
-                chatlog_file_dir = os.path.dirname(CHATLOG_FILE)
-
-                if chatlog_file_dir:
-                    os.makedirs(chatlog_file_dir, exist_ok=True)
-
-                with open(CHATLOG_FILE, "a", encoding="utf-8") as f:
-                    f.write(line)
-
-            with open(per_chat_path, "a", encoding="utf-8") as f:
-                f.write(line)
+            if CHATLOG_LOCAL_ENABLED:
+                try:
+                    write_local_chatlog(row)
+                except Exception as e:
+                    print("LOCAL CHATLOG WRITE ERROR:", str(e), flush=True)
 
     except Exception as e:
         print("CHATLOG WRITE ERROR:", str(e), flush=True)
 
 
-def read_chatlog_entries(chat_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+def read_local_chatlog_entries(chat_id: str, limit: int = 100) -> List[Dict[str, Any]]:
     safe_id = safe_chatlog_id(chat_id)
     file_path = os.path.join(CHATLOG_DIR, f"{safe_id}.jsonl")
 
@@ -270,7 +443,7 @@ def read_chatlog_entries(chat_id: str, limit: int = 100) -> List[Dict[str, Any]]
     return entries
 
 
-def read_chatlog_file_entries(limit: int = 100) -> List[Dict[str, Any]]:
+def read_local_chatlog_file_entries(limit: int = 100) -> List[Dict[str, Any]]:
     if not CHATLOG_FILE or not os.path.exists(CHATLOG_FILE):
         return []
 
@@ -286,6 +459,82 @@ def read_chatlog_file_entries(limit: int = 100) -> List[Dict[str, Any]]:
             continue
 
     return entries
+
+
+def parse_chatlog_sheet_row(headers: List[str], values: List[str]) -> Dict[str, Any]:
+    raw = {
+        header: values[index] if index < len(values) else ""
+        for index, header in enumerate(headers)
+    }
+    meta_text = raw.get("meta_json", "")
+    timestamp_sg = raw.get("timestamp_sg", "") or raw.get("time_sg", "")
+    directions = raw.get("directions", "") or raw.get("direction", "")
+
+    try:
+        meta = json.loads(meta_text) if meta_text else {}
+    except Exception:
+        meta = {"raw": meta_text}
+
+    return {
+        "timestamp_sg": timestamp_sg,
+        "time_sg": timestamp_sg,
+        "chat_id": raw.get("chat_id", ""),
+        "chat_type": raw.get("chat_type", ""),
+        "username": raw.get("username", ""),
+        "directions": directions,
+        "direction": directions,
+        "role": raw.get("role", ""),
+        "message": raw.get("message", ""),
+        "meta": meta,
+    }
+
+
+def read_google_sheet_chatlog_entries(limit: int = 100, chat_id: str = "") -> List[Dict[str, Any]]:
+    try:
+        with CHATLOG_LOCK:
+            worksheet = get_chatlog_sheet()
+
+            if worksheet is None:
+                return []
+
+            rows = worksheet.get_all_values()
+
+    except Exception as e:
+        print("CHATLOG READ ERROR:", str(e), flush=True)
+        return []
+
+    if len(rows) <= 1:
+        return []
+
+    headers = rows[0]
+    entries = [
+        parse_chatlog_sheet_row(headers, values)
+        for values in rows[1:]
+        if any(str(value).strip() for value in values)
+    ]
+
+    if chat_id:
+        chat_id = str(chat_id)
+        entries = [entry for entry in entries if str(entry.get("chat_id", "")) == chat_id]
+
+    if limit > 0:
+        entries = entries[-limit:]
+
+    return entries
+
+
+def read_chatlog_entries(chat_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    if chatlog_google_sheet_configured():
+        return read_google_sheet_chatlog_entries(limit=limit, chat_id=chat_id)
+
+    return read_local_chatlog_entries(chat_id, limit=limit)
+
+
+def read_chatlog_file_entries(limit: int = 100) -> List[Dict[str, Any]]:
+    if chatlog_google_sheet_configured():
+        return read_google_sheet_chatlog_entries(limit=limit)
+
+    return read_local_chatlog_file_entries(limit=limit)
 
 
 def clean_number(number: str) -> str:
@@ -4008,6 +4257,10 @@ def health():
             "active_inactivity_chats": len(INACTIVITY_STATE),
             "schedule_file": SCHEDULE_FILE,
             "chatlog_enabled": CHATLOG_ENABLED,
+            "chatlog_storage": chatlog_storage_label(),
+            "chatlog_local_enabled": CHATLOG_LOCAL_ENABLED,
+            "chatlog_google_sheet_configured": chatlog_google_sheet_configured(),
+            "google_sheet_worksheet": GOOGLE_SHEET_WORKSHEET,
             "chatlog_file": os.path.abspath(CHATLOG_FILE) if CHATLOG_FILE else "",
             "chatlog_file_exists": bool(CHATLOG_FILE and os.path.exists(CHATLOG_FILE)),
             "chatlog_dir": os.path.abspath(CHATLOG_DIR),
@@ -4096,32 +4349,58 @@ def debug_chatlogs():
     if forbidden:
         return forbidden
 
-    os.makedirs(CHATLOG_DIR, exist_ok=True)
     logs = []
 
-    for filename in sorted(os.listdir(CHATLOG_DIR)):
-        if not filename.endswith(".jsonl"):
-            continue
+    if chatlog_google_sheet_configured():
+        logs_by_chat: Dict[str, Dict[str, Any]] = {}
 
-        file_path = os.path.join(CHATLOG_DIR, filename)
-        stat = os.stat(file_path)
-        chat_id = filename[:-6]
-        logs.append(
-            {
-                "chat_id": chat_id,
-                "filename": filename,
-                "size_bytes": stat.st_size,
-                "modified_sg": datetime.fromtimestamp(
-                    stat.st_mtime,
-                    ZoneInfo("Asia/Singapore"),
-                ).isoformat(),
-                "view_url": (
-                    f"/debug/chatlog?chat_id={chat_id}&token={request.args.get('token', '')}"
-                    if request.args.get("token", "")
-                    else f"/debug/chatlog?chat_id={chat_id}"
-                ),
-            }
-        )
+        for entry in read_google_sheet_chatlog_entries(limit=0):
+            chat_id = str(entry.get("chat_id", "")).strip()
+
+            if not chat_id:
+                continue
+
+            log = logs_by_chat.setdefault(
+                chat_id,
+                {
+                    "chat_id": chat_id,
+                    "count": 0,
+                    "modified_sg": "",
+                    "view_url": (
+                        f"/debug/chatlog?chat_id={chat_id}&token={request.args.get('token', '')}"
+                        if request.args.get("token", "")
+                        else f"/debug/chatlog?chat_id={chat_id}"
+                    ),
+                },
+            )
+            log["count"] += 1
+            log["modified_sg"] = entry.get("time_sg", "")
+
+        logs = list(logs_by_chat.values())
+    elif os.path.isdir(CHATLOG_DIR):
+        for filename in sorted(os.listdir(CHATLOG_DIR)):
+            if not filename.endswith(".jsonl"):
+                continue
+
+            file_path = os.path.join(CHATLOG_DIR, filename)
+            stat = os.stat(file_path)
+            chat_id = filename[:-6]
+            logs.append(
+                {
+                    "chat_id": chat_id,
+                    "filename": filename,
+                    "size_bytes": stat.st_size,
+                    "modified_sg": datetime.fromtimestamp(
+                        stat.st_mtime,
+                        ZoneInfo("Asia/Singapore"),
+                    ).isoformat(),
+                    "view_url": (
+                        f"/debug/chatlog?chat_id={chat_id}&token={request.args.get('token', '')}"
+                        if request.args.get("token", "")
+                        else f"/debug/chatlog?chat_id={chat_id}"
+                    ),
+                }
+            )
 
     logs.sort(key=lambda item: item["modified_sg"], reverse=True)
 
@@ -4129,6 +4408,9 @@ def debug_chatlogs():
         {
             "status": "ok",
             "chatlog_enabled": CHATLOG_ENABLED,
+            "chatlog_storage": chatlog_storage_label(),
+            "google_sheet_configured": chatlog_google_sheet_configured(),
+            "google_sheet_worksheet": GOOGLE_SHEET_WORKSHEET,
             "chatlog_dir": CHATLOG_DIR,
             "count": len(logs),
             "logs": logs,
@@ -4185,6 +4467,9 @@ def debug_chat_log_file():
     return jsonify(
         {
             "status": "ok",
+            "chatlog_storage": chatlog_storage_label(),
+            "google_sheet_configured": chatlog_google_sheet_configured(),
+            "google_sheet_worksheet": GOOGLE_SHEET_WORKSHEET,
             "chatlog_file": CHATLOG_FILE,
             "chatlog_file_exists": bool(CHATLOG_FILE and os.path.exists(CHATLOG_FILE)),
             "limit": limit,
@@ -4219,7 +4504,10 @@ def debug_test_chatlog():
     return jsonify(
         {
             "status": "ok",
-            "message": "Test chatlog written into chat_logs.jsonl.",
+            "message": f"Test chatlog written to {chatlog_storage_label()}.",
+            "chatlog_storage": chatlog_storage_label(),
+            "google_sheet_configured": chatlog_google_sheet_configured(),
+            "google_sheet_worksheet": GOOGLE_SHEET_WORKSHEET,
             "chatlog_file": CHATLOG_FILE,
             "chatlog_file_exists": bool(CHATLOG_FILE and os.path.exists(CHATLOG_FILE)),
             "file_view_path": "/debug/chat-log-file",

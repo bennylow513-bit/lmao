@@ -3,6 +3,8 @@ gunicorn
 python-dotenv
 requests
 openai
+gspread
+google-auth
 pymupdf
 watchdog
 python-docx
