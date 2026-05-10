@@ -2511,16 +2511,9 @@ def open_live_support_chat(customer_chat_id: str, target_chat_id: str, outlet: s
 
 def support_reply_instructions(customer_chat_id: str) -> str:
     return (
-        "Easy reply for this customer:\n"
-        "Just type your message normally here, and I'll send it to this customer.\n\n"
-        "If there are many customers at the same time:\n"
-        "Reply directly to this Telegram message so I know which customer you mean.\n\n"
-        "Example reply:\n"
-        "Hi, this is Jal Yoga Customer Service. How can I help?\n\n"
-        "To close this customer's chat, type:\n"
-        "close\n\n"
-        "Backup command:\n"
-        f"/reply {customer_chat_id} your message"
+        "Reply here to message this customer.\n"
+        f"Backup: /reply {customer_chat_id} your message\n"
+        "Close: close"
     )
 
 
