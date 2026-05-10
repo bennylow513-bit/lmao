@@ -3402,7 +3402,13 @@ def handle_main_menu_choice(chat_id: str, text: str) -> str:
 
 
 def handle_current_member_choice(chat_id: str, text: str) -> str:
-    return handle_menu_choice(chat_id, text, CURRENT_MEMBER_CHOICES, current_member_menu_text())
+    reply = handle_menu_choice(chat_id, text, CURRENT_MEMBER_CHOICES)
+
+    if reply:
+        return reply
+
+    clear_flow(chat_id)
+    return ""
 
 
 def handle_member_service_flow(chat_id: str, text: str) -> str:
@@ -3450,15 +3456,20 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
         clear_flow(chat_id)
         return knowledge_reply(chat_id, text, *knowledge_choice)
 
-    return general_enquiry_menu_text()
+    clear_flow(chat_id)
+    return ""
 
 
 # EXTRA OUTLET FLOW HANDLERS
 
-def handle_outlet_choice_flow(chat_id: str, text: str, reply_factory) -> str:
+def handle_outlet_choice_flow(chat_id: str, text: str, reply_factory, optional: bool = False) -> str:
     outlet = detect_outlet_choice(text)
 
     if not outlet:
+        if optional:
+            clear_flow(chat_id)
+            return ""
+
         return outlet_number_question()
 
     remember_outlet_context(chat_id, outlet)
@@ -3471,6 +3482,7 @@ def handle_schedule_outlet_flow(chat_id: str, text: str) -> str:
         chat_id,
         text,
         lambda outlet: live_schedule_reply(chat_id, text, forced_outlet=outlet),
+        optional=True,
     )
 
 
@@ -3499,7 +3511,7 @@ def handle_schedule_request(chat_id: str, text: str) -> str:
 
 
 def handle_contact_outlet_flow(chat_id: str, text: str) -> str:
-    return handle_outlet_choice_flow(chat_id, text, build_outlet_contact_reply)
+    return handle_outlet_choice_flow(chat_id, text, build_outlet_contact_reply, optional=True)
 
 
 def store_nearest_outlet_action(chat_id: str, recommendation: Dict[str, Any]) -> None:
