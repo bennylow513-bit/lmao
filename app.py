@@ -81,9 +81,9 @@ LIVE_SUPPORT_CHATS: Dict[str, Dict[str, str]] = {}
 SUPPORT_ACTIVE_CUSTOMER: Dict[str, str] = {}
 CHATLOG_CHAT_META: Dict[str, Dict[str, str]] = {}
 
-INACTIVITY_WARNING_SECONDS = 600
-INACTIVITY_CLOSE_SECONDS = 1200
-INACTIVITY_CHECK_SECONDS = 30
+INACTIVITY_WARNING_SECONDS = int(os.getenv("INACTIVITY_WARNING_SECONDS", "300"))
+INACTIVITY_CLOSE_SECONDS = int(os.getenv("INACTIVITY_CLOSE_SECONDS", "600"))
+INACTIVITY_CHECK_SECONDS = int(os.getenv("INACTIVITY_CHECK_SECONDS", "30"))
 INACTIVITY_THREAD_STARTED = False
 INACTIVITY_REMINDER_QUEUE = None
 CHATLOG_LOCK = threading.Lock()
@@ -3353,9 +3353,9 @@ def start_inactivity_thread(test_mode: bool = False, reminder_queue=None) -> Non
     global INACTIVITY_CHECK_SECONDS
     global INACTIVITY_REMINDER_QUEUE
 
-    INACTIVITY_WARNING_SECONDS, INACTIVITY_CLOSE_SECONDS, INACTIVITY_CHECK_SECONDS = (
-        (10, 20, 1) if test_mode else (600, 1200, 30)
-    )
+    if test_mode:
+        INACTIVITY_WARNING_SECONDS, INACTIVITY_CLOSE_SECONDS, INACTIVITY_CHECK_SECONDS = (10, 20, 1)
+
     INACTIVITY_REMINDER_QUEUE = reminder_queue if test_mode else None
 
     start_inactivity_checker()
@@ -4311,6 +4311,9 @@ def health():
             "customer_service_telegram_configured": bool(CUSTOMER_SERVICE_TELEGRAM_CHAT_ID),
             "inactivity_checker_started": INACTIVITY_THREAD_STARTED,
             "active_inactivity_chats": len(INACTIVITY_STATE),
+            "inactivity_warning_seconds": INACTIVITY_WARNING_SECONDS,
+            "inactivity_close_seconds": INACTIVITY_CLOSE_SECONDS,
+            "inactivity_check_seconds": INACTIVITY_CHECK_SECONDS,
             "schedule_file": SCHEDULE_FILE,
             "chatlog_enabled": CHATLOG_ENABLED,
             "chatlog_storage": chatlog_storage_label(),
