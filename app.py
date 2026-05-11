@@ -1562,9 +1562,26 @@ def support_handoff_text(clean_answer: str) -> str:
     return "\n".join(lines).strip()
 
 
+def customer_live_chat_close_hint() -> str:
+    return "To close this chat, type CLOSE CHAT, END CHAT, or DONE."
+
+
+def add_live_support_close_hint(text: str) -> str:
+    clean = (text or "").strip()
+
+    if not clean:
+        return customer_live_chat_close_hint()
+
+    if "close this chat" in clean.lower():
+        return clean
+
+    return f"{clean}\n\n{customer_live_chat_close_hint()}"
+
+
 def send_handoff_result(chat_id: str, clean_answer: str, outlet: str, success_text: str, failure_text: str) -> str:
     sent = send_customer_service_handoff_to_telegram(chat_id, clean_answer, outlet)
-    return f"{clean_answer}\n\n{success_text if sent else failure_text}"
+    result_text = add_live_support_close_hint(success_text) if sent else failure_text
+    return f"{clean_answer}\n\n{result_text}"
 
 
 def reset_chat_state(
@@ -1880,7 +1897,13 @@ def should_keep_current_language(chat_id: str, user_text: str) -> bool:
     if not text or norm.isdigit():
         return True
 
-    if norm in RESET_WORDS or norm in OPT_IN_WORDS or norm in OPT_OUT_WORDS or norm in SUPPORT_CLOSE_WORDS:
+    if (
+        norm in RESET_WORDS
+        or norm in OPT_IN_WORDS
+        or norm in OPT_OUT_WORDS
+        or norm in SUPPORT_CLOSE_WORDS
+        or is_customer_close_text(text)
+    ):
         return True
 
     if is_support_command_text(norm) or detect_outlet_from_text(text):
@@ -2554,14 +2577,123 @@ def close_live_support_chat(customer_chat_id: str) -> None:
         SUPPORT_ACTIVE_CUSTOMER.pop(target_chat_id, None)
 
 
+def close_live_support_chat_from_customer(customer_chat_id: str) -> None:
+    customer_chat_id = str(customer_chat_id)
+    live_chat = LIVE_SUPPORT_CHATS.get(customer_chat_id, {})
+    target_chat_id = str(live_chat.get("target_chat_id", ""))
+
+    close_live_support_chat(customer_chat_id)
+
+    if not target_chat_id:
+        return
+
+    try:
+        send_telegram_message(
+            target_chat_id,
+            f"Customer {customer_chat_id} has closed the live Customer Service chat.",
+        )
+    except Exception as e:
+        print("CUSTOMER LIVE CHAT CLOSE NOTICE ERROR:", str(e), flush=True)
+
+
 SUPPORT_CLOSE_WORDS = {"close", "close chat", "done", "resolved", "end chat"}
+CUSTOMER_CLOSE_WORDS = {
+    "close",
+    "close chat",
+    "close conversation",
+    "close customer service",
+    "close live chat",
+    "close support",
+    "close support chat",
+    "done",
+    "end",
+    "resolved",
+    "end chat",
+    "end conversation",
+    "end customer service",
+    "end live chat",
+    "end support",
+    "end support chat",
+    "finish",
+    "finish chat",
+    "finished",
+    "all done",
+    "all good",
+    "im done",
+    "i'm done",
+    "i am done",
+    "we are done",
+    "ok all good",
+    "okay all good",
+    "thats all",
+    "that's all",
+    "that is all",
+    "thats it",
+    "that's it",
+    "that is it",
+    "that should be all",
+    "nothing else",
+    "nothing more",
+    "no more questions",
+    "no further questions",
+    "no need",
+    "no need already",
+    "no thanks",
+    "no thank you",
+    "ok thanks",
+    "okay thanks",
+    "ok thank you",
+    "okay thank you",
+    "thanks thats it",
+    "thanks that's it",
+    "thanks that is it",
+    "thank you thats all",
+    "thank you that's all",
+    "thank you that is all",
+    "thank you thats it",
+    "thank you that's it",
+    "thank you that is it",
+    "leave chat",
+    "quit chat",
+    "cancel chat",
+    "cancel live chat",
+    "stop live chat",
+    "stop support chat",
+    "exit live chat",
+    "exit support chat",
+    "bye",
+    "bye bye",
+    "goodbye",
+    "good bye",
+    "see you",
+    "see ya",
+    "cya",
+    "talk to you later",
+    "thank you bye",
+    "thanks bye",
+    "thank you goodbye",
+    "thanks goodbye",
+    "appreciate it bye",
+    "ok bye",
+    "okay bye",
+    "ok thank you bye",
+    "okay thank you bye",
+    "thanks thats all",
+    "thanks that's all",
+}
+
+
+def is_customer_close_text(text: str) -> bool:
+    norm = normalize(text)
+    clean = simple_text(text)
+    return norm in CUSTOMER_CLOSE_WORDS or clean in CUSTOMER_CLOSE_WORDS
 
 
 def customer_service_reply_text(message: str) -> str:
     return (
         "Jal Yoga Customer Service 🙏\n\n"
         f"{message}\n\n"
-        "You may reply here and our Customer Service team will receive your message."
+        f"{add_live_support_close_hint('You may reply here and our Customer Service team will receive your message.')}"
     )
 
 
@@ -3780,7 +3912,8 @@ def handle_refer_friend_flow(chat_id: str, text: str) -> str:
             f"- Preferred Studio: {outlet}\n\n"
             "That’s amazing! We love meeting friends of our Jal Yoga community. ✨\n\n"
             "Thank you! Our team will reach out to them with a special invitation.\n\n"
-            "You are now connected to Customer Service. You may reply here if you want to ask anything."
+            "You are now connected to Customer Service.\n"
+            f"{add_live_support_close_hint('You may reply here if you want to ask anything.')}"
         )
 
         return add_customer_service_id_note(reply, chat_id)
@@ -4151,8 +4284,8 @@ def process_message(chat_id: str, user_text: str) -> str:
 
             return start_flow_reply(chat_id, text, "main_menu", main_menu_text())
 
-        if norm in {"end chat", "close chat", "stop live chat", "exit live chat"}:
-            close_live_support_chat(chat_id)
+        if is_customer_close_text(text):
+            close_live_support_chat_from_customer(chat_id)
 
             return finish_reply(
                 chat_id,
