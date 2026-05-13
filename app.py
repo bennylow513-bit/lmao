@@ -643,11 +643,13 @@ def fetch_website_knowledge() -> str:
                 continue
 
             page_text = html_to_text(response.text)
+            page_label = url.rstrip("/").split("/")[-1] or "home"
+            page_label = page_label.replace("-", " ").title()
 
             if page_text:
                 parts.append(
                     f"\n\n==================================================\n"
-                    f"JAL YOGA WEBSITE PAGE: {url}\n"
+                    f"JAL YOGA WEBSITE CONTENT: {page_label}\n"
                     f"==================================================\n"
                     f"{page_text[:12000]}"
                 )
@@ -754,6 +756,12 @@ def studio_options_text(include_not_specified: bool = False) -> str:
 
 def studio_prompt(question: str, include_not_specified: bool = False) -> str:
     return f"{question}\n\n{studio_options_text(include_not_specified)}"
+
+
+TRIAL_STUDIO_QUESTION = (
+    "We’d love to help with a trial class. Which studio would you like to visit: "
+    "Alexandra, Katong, Kovan, Upper Bukit Timah, or Woodlands?"
+)
 
 
 def studio_aliases(studio_name: str) -> List[str]:
@@ -1701,7 +1709,25 @@ def add_menu_hint(reply: str) -> str:
     return reply.rstrip() + "\n\nReply MENU to return to the main menu."
 
 
+JAL_YOGA_WEBSITE_URL_RE = re.compile(r"https?://(?:www\.)?jalyoga\.com\.sg/\S*", re.IGNORECASE)
+
+
+def remove_jal_yoga_website_urls(reply: str) -> str:
+    lines = []
+
+    for line in reply.splitlines():
+        cleaned = JAL_YOGA_WEBSITE_URL_RE.sub("", line).rstrip()
+
+        if line.strip() and not cleaned.strip():
+            continue
+
+        lines.append(cleaned)
+
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def finish_reply(chat_id: str, user_text: str, reply: str, add_menu: bool = True) -> str:
+    reply = remove_jal_yoga_website_urls(reply)
     final_reply = add_menu_hint(reply) if add_menu else reply
 
     add_history(chat_id, "user", user_text)
@@ -2092,14 +2118,16 @@ Language rule:
 - Customer language: {language}
 - Translate all customer-facing wording into the customer language where possible.
 - If the customer message is only a number, keep replying in the stored customer language.
-- Preserve outlet names, menu numbers, phone numbers, Telegram IDs, links, and formatting.
+- Preserve outlet names, menu numbers, phone numbers, Telegram IDs, WhatsApp links, and formatting.
 - Do not add information that is not in the knowledge file or Jal Yoga website content.
 
 Core rules:
 - Help only with Jal Yoga enquiries.
 - Be warm, concise, professional, and helpful.
 - Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, or membership details.
-- If information is not confirmed, say you are not fully sure and use [HANDOFF].
+- Do not give Jal Yoga website URLs to customers. Use the website content to answer in text instead.
+- For class schedule, timetable, class timing, or slot questions, answer from the Jal Yoga website content when available, do not send the schedule page link, and then ask: {TRIAL_STUDIO_QUESTION}
+- If information is not confirmed, say you are not fully sure and use [HANDOFF], except when the task specifically says to answer a class schedule question without handoff.
 - Ask only one question at a time.
 - Do not mention Meta, webhook, Python, OpenAI, code, or internal system details.
 
@@ -2142,17 +2170,19 @@ Use ONLY:
 Language:
 - Customer language: {language}
 - Reply in the customer's language where possible.
-- Preserve outlet names, menu numbers, phone numbers, Telegram IDs, and links.
+- Preserve outlet names, menu numbers, phone numbers, Telegram IDs, WhatsApp links, and formatting.
 
 Core behaviour:
 - Answer only Jal Yoga enquiries.
 - Use only this knowledge file, Jal Yoga website content, recent chat context, and live contact config.
 - Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, or membership details.
+- Do not give Jal Yoga website URLs to customers. Use the website content to answer in text instead.
+- For class schedule, timetable, class timing, or slot questions, answer from the Jal Yoga website content when available, do not send the schedule page link, and then ask: {TRIAL_STUDIO_QUESTION}
 - Ask one question at a time.
 - Continue the current flow based on recent chat context.
 - Use details the user already provided.
 - Do not restart a flow unless the user says MENU, START, HOME, MAIN MENU, or RESTART.
-- If information is not confirmed, say you are not fully sure and use [HANDOFF].
+- If information is not confirmed, say you are not fully sure and use [HANDOFF], except for class schedule questions where you should answer from available website content without sending a website link.
 
 Customer Service handoff format:
 
@@ -2265,7 +2295,7 @@ def ask_outlet_before_handoff_text() -> str:
 
 
 def trial_outlet_question() -> str:
-    return studio_prompt("Which studio would you prefer? You can also type your location or postal code and I will suggest the nearest outlet.")
+    return TRIAL_STUDIO_QUESTION
 
 
 def trial_start_text() -> str:
@@ -3313,6 +3343,34 @@ def fuzzy_phrase_match(text: str, phrases: List[str], threshold: float = 0.76) -
     return False
 
 
+CLASS_SCHEDULE_NON_ENGLISH_WORDS = phrase_list("jadual|时间表|時間表|課表|课程表")
+CLASS_SCHEDULE_KEYWORDS = phrase_list(
+    "schedule|schdule|sched|timetable|time table|class schedule|class timetable|class timing|class timings|class time|class times|what class|what classes|classes today|today class|today classes|today schedule|tomorrow schedule|available class|available classes|available slot|available slots|timeslot|timeslots"
+)
+CLASS_SCHEDULE_CONTEXT_PATTERNS = [
+    r"\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b.*\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b",
+    r"\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b.*\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b",
+]
+CLASS_SCHEDULE_FUZZY_PHRASES = phrase_list(
+    "schedule|schdule|schedle|schedual|secdule|scedule|scehdule|shedule|skedule|timetable|timetabel|timetble|time table|class schedule|class timing|class timetable"
+)
+
+
+def is_class_schedule_request(text: str) -> bool:
+    normalized = normalize(text)
+    clean = simple_text(text)
+
+    if not clean and not text.strip():
+        return False
+
+    return (
+        any(word in normalized or word in text for word in CLASS_SCHEDULE_NON_ENGLISH_WORDS)
+        or any(keyword in normalized for keyword in CLASS_SCHEDULE_KEYWORDS)
+        or any(re.search(pattern, clean, flags=re.IGNORECASE) for pattern in CLASS_SCHEDULE_CONTEXT_PATTERNS)
+        or fuzzy_phrase_match(text, CLASS_SCHEDULE_FUZZY_PHRASES, threshold=0.76)
+    )
+
+
 
 # INACTIVITY
 
@@ -3484,6 +3542,49 @@ def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
     # goes to the LLM, which can answer from knowledge.txt + Jal Yoga website text.
     clear_flow(chat_id)
     return ask_llm(chat_id, text)
+
+
+def append_trial_studio_question(reply: str, fallback: str = "") -> str:
+    clean_reply = remove_jal_yoga_website_urls(strip_handoff_token(reply)).strip()
+
+    if (
+        "[HANDOFF]" in reply
+        or "I’ll pass this to our Customer Service team" in clean_reply
+        or "I'll pass this to our Customer Service team" in clean_reply
+    ):
+        clean_reply = fallback
+
+    if not clean_reply:
+        clean_reply = "I’ll help with the class schedule based on the latest Jal Yoga information I have."
+
+    if TRIAL_STUDIO_QUESTION in clean_reply:
+        return clean_reply
+
+    return f"{clean_reply}\n\n{TRIAL_STUDIO_QUESTION}"
+
+
+def handle_class_schedule_request(chat_id: str, text: str) -> str:
+    if not is_class_schedule_request(text):
+        return ""
+
+    task = (
+        "Answer the customer's class schedule, timetable, class timing, or slot question "
+        "using the Jal Yoga website content and knowledge file. Do not provide, mention, "
+        "or point to any Jal Yoga website URL. If schedule details are available in the "
+        "website content, summarize the relevant details clearly in text. If exact live "
+        "timings or slot availability are not available in the provided content, say you "
+        "do not have confirmed live timing or slot availability. Do not invent classes, "
+        "trainers, days, times, slots, prices, or promotions. Do not include [HANDOFF]. "
+        "End with exactly this "
+        f"question: {TRIAL_STUDIO_QUESTION}"
+    )
+    fallback = (
+        "I’m not fully sure of the live class timings from the information I have right now."
+    )
+    reply = append_trial_studio_question(knowledge_reply(chat_id, text, task, fallback), fallback)
+
+    set_flow(chat_id, "trial_outlet")
+    return reply
 
 
 # EXTRA OUTLET FLOW HANDLERS
@@ -4194,6 +4295,11 @@ def process_message(chat_id: str, user_text: str) -> str:
         "i want to ask a question",
     }:
         return start_flow_reply(chat_id, text, "general_enquiry_menu", general_enquiry_menu_text())
+
+    class_schedule_reply = handle_class_schedule_request(chat_id, text)
+
+    if class_schedule_reply:
+        return finish_reply(chat_id, text, class_schedule_reply)
 
     flow_reply = handle_active_flow_stage(chat_id, text)
 
