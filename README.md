@@ -173,7 +173,6 @@ Example chatlog entry:
 .
 ├── app.py
 ├── knowledge.txt
-├── schedule.json
 ├── requirements.txt
 ├── README.md
 ├── .env
@@ -211,7 +210,6 @@ It handles:
 - Customer Service handoff
 - Chatlog saving
 - Debug routes
-- Schedule loading
 - Knowledge file loading
 
 ---
@@ -233,14 +231,6 @@ Put Jal Yoga information here, such as:
 - Customer Service information
 
 The bot should use this file as the main source of truth.
-
----
-
-### `schedule.json`
-
-Optional class schedule file.
-
-Use this file if you want the bot to answer schedule questions from structured data.
 
 ---
 
@@ -357,7 +347,6 @@ DEBUG_ROUTE_TOKEN=your_private_debug_token_here
 
 PORT=5000
 OPT_OUT_FILE=telegram_opt_out_users.json
-SCHEDULE_FILE=schedule.json
 
 CHATLOG_ENABLED=true
 CHATLOG_DIR=chatlogs
@@ -503,7 +492,6 @@ DEBUG_ROUTE_TOKEN=
 
 PORT=5000
 OPT_OUT_FILE=telegram_opt_out_users.json
-SCHEDULE_FILE=schedule.json
 
 CHATLOG_ENABLED=true
 CHATLOG_DIR=chatlogs
@@ -587,14 +575,6 @@ https://YOUR-RENDER-APP.onrender.com/debug/config?token=YOUR_DEBUG_ROUTE_TOKEN
 
 ```text
 https://YOUR-RENDER-APP.onrender.com/debug/outlets?token=YOUR_DEBUG_ROUTE_TOKEN
-```
-
----
-
-### Check schedule
-
-```text
-https://YOUR-RENDER-APP.onrender.com/debug/schedule?token=YOUR_DEBUG_ROUTE_TOKEN
 ```
 
 ---

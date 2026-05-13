@@ -5,7 +5,7 @@ import re
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -41,7 +41,6 @@ DEBUG_ROUTE_TOKEN = os.getenv("DEBUG_ROUTE_TOKEN", "")
 
 PORT = int(os.getenv("PORT", "5000"))
 OPT_OUT_FILE = os.getenv("OPT_OUT_FILE", "telegram_opt_out_users.json")
-SCHEDULE_FILE = os.getenv("SCHEDULE_FILE", "schedule.json")
 
 # Chatlog settings
 CHATLOG_ENABLED = os.getenv("CHATLOG_ENABLED", "true").lower() not in {"0", "false", "no", "off"}
@@ -2417,7 +2416,6 @@ FLOW_QUESTION_BUILDERS.update(
         "staff_studio": lambda _flow: studio_prompt("Which studio is this related to?"),
         "staff_room": lambda _flow: "Which room is this related to?",
         "staff_member_booking_details": lambda _flow: staff_booking_details_question(),
-        "schedule_outlet": lambda _flow: outlet_number_question(),
         "contact_outlet": lambda _flow: outlet_number_question(),
         "pending_handoff_outlet": lambda _flow: ask_outlet_before_handoff_text(),
     }
@@ -3278,26 +3276,7 @@ def send_refer_friend_to_outlet(customer_chat_id: str, referral: Dict[str, str])
     )
 
 
-# LIVE SCHEDULE FROM JSON
-
-DEFAULT_SCHEDULE_ROWS = {
-    "Alexandra": [("Monday", "7:00 PM", "Yoga"), ("Wednesday", "6:00 PM", "Pilates"), ("Saturday", "10:00 AM", "Trial Class")],
-    "Katong": [("Tuesday", "7:30 PM", "Yoga"), ("Thursday", "6:30 PM", "Barre"), ("Sunday", "11:00 AM", "Trial Class")],
-    "Kovan": [("Monday", "6:30 PM", "Pilates"), ("Friday", "7:00 PM", "Yoga"), ("Saturday", "9:00 AM", "Trial Class")],
-    "Upper Bukit Timah": [("Tuesday", "6:00 PM", "Yoga"), ("Thursday", "7:30 PM", "Pilates"), ("Sunday", "10:30 AM", "Trial Class")],
-    "Woodlands": [("Wednesday", "7:00 PM", "Barre"), ("Friday", "6:00 PM", "Yoga"), ("Saturday", "11:30 AM", "Trial Class")],
-}
-
-DEFAULT_SCHEDULE = {
-    "updated": "2026-05-04",
-    "studios": {
-        outlet: [
-            {"day": day, "time": time_text, "class": class_name, "trainer": "TBC", "slots": "TBC"}
-            for day, time_text, class_name in classes
-        ]
-        for outlet, classes in DEFAULT_SCHEDULE_ROWS.items()
-    },
-}
+# FUZZY PHRASE MATCHING
 
 
 def fuzzy_phrase_match(text: str, phrases: List[str], threshold: float = 0.76) -> bool:
@@ -3333,188 +3312,6 @@ def fuzzy_phrase_match(text: str, phrases: List[str], threshold: float = 0.76) -
 
     return False
 
-
-SCHEDULE_NON_ENGLISH_WORDS = phrase_list("jadual|时间表|時間表|課表|课程表")
-SCHEDULE_KEYWORDS = phrase_list(
-    "schedule|schdule|sched|timetable|time table|class schedule|class timetable|class timing|class timings|class time|class times|what class|what classes|classes today|today class|today classes|today schedule|tomorrow schedule|available class|available classes|available slot|available slots|slot|slots|timing|timings|timeslot|timeslots"
-)
-SCHEDULE_CONTEXT_PATTERNS = [
-    r"\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b.*\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b",
-    r"\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b.*\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b",
-]
-SCHEDULE_FUZZY_PHRASES = phrase_list(
-    "schedule|schdule|schedle|schedual|secdule|scedule|scehdule|shedule|skedule|timetable|timetabel|timetble|time table|class schedule|class timing|class timetable"
-)
-SCHEDULE_OUTLET_PROMPT_MARKER = (
-    "Please reply with an outlet number or outlet name if you want to see only one outlet:"
-)
-
-
-def is_schedule_request(text: str) -> bool:
-    t = normalize(text)
-    clean = simple_text(text)
-
-    if not clean and not text.strip():
-        return False
-
-    return (
-        any(word in t or word in text for word in SCHEDULE_NON_ENGLISH_WORDS)
-        or any(keyword in t for keyword in SCHEDULE_KEYWORDS)
-        or any(re.search(pattern, clean, flags=re.IGNORECASE) for pattern in SCHEDULE_CONTEXT_PATTERNS)
-        or fuzzy_phrase_match(text, SCHEDULE_FUZZY_PHRASES, threshold=0.76)
-    )
-
-
-def is_outlet_number_choice(text: str) -> bool:
-    norm = normalize(text)
-
-    if not norm.isdigit():
-        return False
-
-    number = int(norm)
-    return 1 <= number <= len(studio_names())
-
-
-def has_open_schedule_outlet_prompt(chat_id: str) -> bool:
-    for item in reversed(CHAT_HISTORY.get(chat_id, [])[-10:]):
-        role = item.get("role", "")
-        content = item.get("content", "")
-
-        if role == "user":
-            return False
-
-        if role == "assistant" and SCHEDULE_OUTLET_PROMPT_MARKER in content:
-            return True
-
-    return False
-
-
-def load_schedule_data() -> dict:
-    try:
-        with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        if isinstance(data, dict) and data.get("studios"):
-            return data
-
-    except FileNotFoundError:
-        print("SCHEDULE FILE NOT FOUND. Using default schedule.", flush=True)
-
-    except Exception as e:
-        print("SCHEDULE LOAD ERROR:", str(e), flush=True)
-        traceback.print_exc()
-
-    return DEFAULT_SCHEDULE
-
-
-def requested_day_from_text(text: str) -> str:
-    t = normalize(text)
-    now = datetime.now(ZoneInfo("Asia/Singapore"))
-
-    if "today" in t:
-        return now.strftime("%A")
-
-    if "tomorrow" in t:
-        return (now + timedelta(days=1)).strftime("%A")
-
-    days = [
-        "monday",
-        "tuesday",
-        "wednesday",
-        "thursday",
-        "friday",
-        "saturday",
-        "sunday",
-    ]
-
-    for day in days:
-        if day in t:
-            return day.title()
-
-    return ""
-
-
-def format_one_outlet_schedule(outlet: str, classes: list, day_filter: str = "") -> str:
-    address = get_studio_address(outlet)
-
-    lines = [f"{outlet} Schedule"]
-
-    if address:
-        lines.append(f"Address: {address}")
-
-    lines.append("")
-
-    if day_filter:
-        classes = [
-            item for item in classes
-            if str(item.get("day", "")).lower() == day_filter.lower()
-        ]
-
-    if not classes:
-        if day_filter:
-            lines.append(f"No classes are listed for {day_filter} right now.")
-        else:
-            lines.append("No classes are listed for this outlet right now.")
-
-        return "\n".join(lines)
-
-    for item in classes:
-        day = item.get("day", "TBC")
-        time_text = item.get("time", "TBC")
-        class_name = item.get("class", "TBC")
-        trainer = item.get("trainer", "TBC")
-        slots = str(item.get("slots", "TBC"))
-
-        line = f"- {day}, {time_text}: {class_name}"
-
-        if trainer and trainer != "TBC":
-            line += f" with {trainer}"
-
-        if slots and slots != "TBC":
-            line += f" ({slots} slots left)"
-
-        lines.append(line)
-
-    return "\n".join(lines)
-
-
-def live_schedule_reply(chat_id: str, user_text: str, forced_outlet: str = "") -> str:
-    schedule_data = load_schedule_data()
-    studios_data = schedule_data.get("studios", {})
-    updated = schedule_data.get("updated", "TBC")
-
-    requested_outlet = forced_outlet or detect_outlet_choice(user_text)
-    day_filter = requested_day_from_text(user_text)
-
-    if requested_outlet:
-        classes = studios_data.get(requested_outlet, [])
-
-        title_day = f" for {day_filter}" if day_filter else ""
-
-        return (
-            f"Here is the latest schedule I have for {requested_outlet}{title_day}. 🙏\n"
-            f"Last updated: {updated}\n\n"
-            f"{format_one_outlet_schedule(requested_outlet, classes, day_filter)}"
-        )
-
-    reply_lines = [
-        "Here is the latest Jal Yoga class schedule I have. 🙏",
-        f"Last updated: {updated}",
-        "",
-    ]
-
-    if day_filter:
-        reply_lines[0] = f"Here is the latest Jal Yoga class schedule I have for {day_filter}. 🙏"
-
-    for outlet in studio_names():
-        classes = studios_data.get(outlet, [])
-        reply_lines.append(format_one_outlet_schedule(outlet, classes, day_filter))
-        reply_lines.append("")
-
-    reply_lines.append("Please reply with an outlet number or outlet name if you want to see only one outlet:")
-    reply_lines.append(studio_options_text())
-
-    return "\n".join(reply_lines).strip()
 
 
 # INACTIVITY
@@ -3704,40 +3501,6 @@ def handle_outlet_choice_flow(chat_id: str, text: str, reply_factory, optional: 
     remember_outlet_context(chat_id, outlet)
     clear_flow(chat_id)
     return reply_factory(outlet)
-
-
-def handle_schedule_outlet_flow(chat_id: str, text: str) -> str:
-    return handle_outlet_choice_flow(
-        chat_id,
-        text,
-        lambda outlet: live_schedule_reply(chat_id, text, forced_outlet=outlet),
-        optional=True,
-    )
-
-
-def handle_open_schedule_outlet_choice(chat_id: str, text: str) -> str:
-    if not is_outlet_number_choice(text):
-        return ""
-
-    if not has_open_schedule_outlet_prompt(chat_id):
-        return ""
-
-    return handle_schedule_outlet_flow(chat_id, text)
-
-
-def handle_schedule_request(chat_id: str, text: str) -> str:
-    if not is_schedule_request(text):
-        return ""
-
-    requested_outlet = detect_outlet_choice(text)
-
-    if requested_outlet:
-        clear_flow(chat_id)
-        return live_schedule_reply(chat_id, text, forced_outlet=requested_outlet)
-
-    set_flow(chat_id, "schedule_outlet")
-    return live_schedule_reply(chat_id, text)
-
 
 def handle_contact_outlet_flow(chat_id: str, text: str) -> str:
     return handle_outlet_choice_flow(chat_id, text, build_outlet_contact_reply, optional=True)
@@ -4029,22 +3792,6 @@ def handle_corporate_flow(chat_id: str, text: str) -> str:
     flow = get_flow(chat_id)
     stage = get_flow_stage(chat_id)
 
-    # GLOBAL SCHEDULE SHORTCUT
-    # This makes schedule work anytime, even if user spells it wrongly.
-    # Examples: schedule, secdule, schedual, scedule, timetable, class timing.
-    # It will show the timetable instead of giving the website link.
-    if is_schedule_request(text):
-        requested_outlet = detect_outlet_choice(text)
-
-        if requested_outlet:
-            clear_flow(chat_id)
-            reply = live_schedule_reply(chat_id, text, forced_outlet=requested_outlet)
-            return finish_reply(chat_id, text, reply)
-
-        set_flow(chat_id, "schedule_outlet")
-        reply = live_schedule_reply(chat_id, text)
-        return finish_reply(chat_id, text, reply)
-
     if stage == "corporate_name":
         name = text.strip()
 
@@ -4252,16 +3999,10 @@ def handle_active_flow_stage(chat_id: str, text: str) -> str:
     ):
         return handle_nearest_outlet_request(chat_id, text)
 
-    schedule_outlet_reply = handle_open_schedule_outlet_choice(chat_id, text)
-
-    if schedule_outlet_reply:
-        return schedule_outlet_reply
-
     if stage.startswith("member_"):
         return handle_member_service_flow(chat_id, text)
 
     stage_handlers = {
-        "schedule_outlet": handle_schedule_outlet_flow,
         "contact_outlet": handle_contact_outlet_flow,
         "nearest_outlet_location": handle_nearest_outlet_location_flow,
         "nearest_outlet_action": handle_nearest_outlet_action_flow,
@@ -4454,11 +4195,6 @@ def process_message(chat_id: str, user_text: str) -> str:
     }:
         return start_flow_reply(chat_id, text, "general_enquiry_menu", general_enquiry_menu_text())
 
-    schedule_reply = handle_schedule_request(chat_id, text)
-
-    if schedule_reply:
-        return finish_reply(chat_id, text, schedule_reply)
-
     flow_reply = handle_active_flow_stage(chat_id, text)
 
     if flow_reply:
@@ -4566,7 +4302,6 @@ def health():
             "inactivity_warning_seconds": INACTIVITY_WARNING_SECONDS,
             "inactivity_close_seconds": INACTIVITY_CLOSE_SECONDS,
             "inactivity_check_seconds": INACTIVITY_CHECK_SECONDS,
-            "schedule_file": SCHEDULE_FILE,
             "chatlog_enabled": CHATLOG_ENABLED,
             "chatlog_storage": chatlog_storage_label(),
             "chatlog_local_enabled": CHATLOG_LOCAL_ENABLED,
@@ -4622,16 +4357,6 @@ def debug_outlets():
             "outlets": outlet_data,
         }
     )
-
-
-@app.route("/debug/schedule", methods=["GET"])
-def debug_schedule():
-    forbidden = require_debug_route_access()
-
-    if forbidden:
-        return forbidden
-
-    return jsonify(load_schedule_data())
 
 
 @app.route("/debug/trial-bookings", methods=["GET"])
