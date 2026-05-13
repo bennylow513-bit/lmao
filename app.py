@@ -5,8 +5,9 @@ import re
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
+from html import unescape
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -762,6 +763,15 @@ TRIAL_STUDIO_QUESTION = (
     "We’d love to help with a trial class. Which studio would you like to visit: "
     "Alexandra, Katong, Kovan, Upper Bukit Timah, or Woodlands?"
 )
+
+
+MINDBODY_SCHEDULE_WIDGETS = {
+    "Alexandra": {"widget_id": "211772", "location_id": "1"},
+    "Katong": {"widget_id": "211771", "location_id": "3"},
+    "Kovan": {"widget_id": "203543", "location_id": "6"},
+    "Upper Bukit Timah": {"widget_id": "211773", "location_id": "2"},
+    "Woodlands": {"widget_id": "211775", "location_id": "5"},
+}
 
 
 def studio_aliases(studio_name: str) -> List[str]:
@@ -3371,6 +3381,204 @@ def is_class_schedule_request(text: str) -> bool:
     )
 
 
+def requested_schedule_dates(text: str, lookahead_days: int = 5) -> List[datetime]:
+    t = normalize(text)
+    today = datetime.now(ZoneInfo("Asia/Singapore")).date()
+
+    if "today" in t:
+        return [datetime.combine(today, datetime.min.time())]
+
+    if "tomorrow" in t:
+        return [datetime.combine(today + timedelta(days=1), datetime.min.time())]
+
+    weekdays = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ]
+
+    for index, day in enumerate(weekdays):
+        if day in t:
+            delta = (index - today.weekday()) % 7
+            return [datetime.combine(today + timedelta(days=delta), datetime.min.time())]
+
+    return [
+        datetime.combine(today + timedelta(days=offset), datetime.min.time())
+        for offset in range(lookahead_days)
+    ]
+
+
+def clean_schedule_text(text: str) -> str:
+    return re.sub(r"\s+", " ", unescape(text or "")).strip()
+
+
+def parse_mindbody_schedule_html(html: str) -> List[Dict[str, str]]:
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+        rows = []
+
+        for day_block in soup.select(".bw-widget__day"):
+            date_text = clean_schedule_text(day_block.select_one(".bw-widget__date").get_text(" ") if day_block.select_one(".bw-widget__date") else "")
+
+            for session in day_block.select(".bw-session"):
+                start = clean_schedule_text(session.select_one(".hc_starttime").get_text(" ") if session.select_one(".hc_starttime") else "")
+                end = clean_schedule_text(session.select_one(".hc_endtime").get_text(" ") if session.select_one(".hc_endtime") else "")
+                class_name = clean_schedule_text(session.select_one(".bw-session__name").get_text(" ") if session.select_one(".bw-session__name") else "")
+                trainer = clean_schedule_text(session.select_one(".bw-session__staff").get_text(" ") if session.select_one(".bw-session__staff") else "")
+                location = clean_schedule_text(session.select_one(".bw-session__location").get_text(" ") if session.select_one(".bw-session__location") else "")
+
+                if not class_name or not start:
+                    continue
+
+                rows.append(
+                    {
+                        "date": date_text,
+                        "start": start,
+                        "end": end,
+                        "class": class_name,
+                        "trainer": trainer,
+                        "location": location,
+                    }
+                )
+
+        return rows
+
+    except Exception as e:
+        print("MINDBODY SCHEDULE PARSE ERROR:", str(e), flush=True)
+        traceback.print_exc()
+        return []
+
+
+def fetch_mindbody_schedule_rows(outlet: str, date_value: datetime) -> List[Dict[str, str]]:
+    widget = MINDBODY_SCHEDULE_WIDGETS.get(outlet)
+
+    if not widget:
+        return []
+
+    url = f"https://widgets.mindbodyonline.com/widgets/schedules/{widget['widget_id']}/load_markup"
+    params = {
+        "options[start_date]": date_value.strftime("%Y-%m-%d"),
+        "options[location]": widget["location_id"],
+        "options[trainer]": "",
+        "options[type_group]": "",
+        "options[visit_type]": "",
+        "preview": "",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=12,
+            headers={
+                "User-Agent": "Mozilla/5.0 JalYogaTelegramAssistant/1.0",
+                "Referer": "https://www.jalyoga.com.sg/jal-schedule/",
+            },
+        )
+
+        if response.status_code != 200:
+            print(f"MINDBODY SCHEDULE SKIPPED {outlet}: {response.status_code}", flush=True)
+            return []
+
+        data = response.json()
+        return parse_mindbody_schedule_html(data.get("class_sessions", ""))
+
+    except Exception as e:
+        print(f"MINDBODY SCHEDULE FETCH ERROR for {outlet}:", str(e), flush=True)
+        traceback.print_exc()
+        return []
+
+
+def collect_mindbody_schedule(outlets: List[str], dates: List[datetime], max_per_outlet: int = 3) -> Dict[str, List[Dict[str, str]]]:
+    schedule = {}
+
+    for outlet in outlets:
+        rows = []
+
+        for date_value in dates:
+            rows.extend(fetch_mindbody_schedule_rows(outlet, date_value))
+
+            if len(rows) >= max_per_outlet:
+                break
+
+        schedule[outlet] = rows[:max_per_outlet]
+
+    return schedule
+
+
+def format_schedule_row(row: Dict[str, str]) -> str:
+    time_text = f"{row['start']} - {row['end']}" if row.get("end") else row.get("start", "")
+    line = f"- {time_text}: {row.get('class', 'Class')}"
+
+    if row.get("trainer"):
+        line += f" with {row['trainer']}"
+
+    return line
+
+
+def live_class_schedule_reply(text: str) -> str:
+    requested_outlet = detect_outlet_choice(text)
+    outlets = [requested_outlet] if requested_outlet else studio_names()
+    dates = requested_schedule_dates(text)
+    max_per_outlet = 6 if requested_outlet else 3
+    schedule = collect_mindbody_schedule(outlets, dates, max_per_outlet=max_per_outlet)
+
+    if requested_outlet:
+        rows = schedule.get(requested_outlet, [])
+
+        if rows:
+            lines = [f"Here are upcoming classes I found for {requested_outlet}:", ""]
+            current_date = ""
+
+            for row in rows:
+                if row.get("date") and row["date"] != current_date:
+                    current_date = row["date"]
+                    lines.append(current_date)
+
+                lines.append(format_schedule_row(row))
+
+            return append_trial_studio_question("\n".join(lines))
+
+        return append_trial_studio_question(
+            f"I don’t see any listed classes for {requested_outlet} in the next few days from the live schedule."
+        )
+
+    lines = ["Here are upcoming classes I found from the live schedule:", ""]
+    has_rows = False
+
+    for outlet in outlets:
+        rows = schedule.get(outlet, [])
+
+        if not rows:
+            continue
+
+        has_rows = True
+        lines.append(f"{outlet}")
+        current_date = ""
+
+        for row in rows:
+            if row.get("date") and row["date"] != current_date:
+                current_date = row["date"]
+                lines.append(current_date)
+
+            lines.append(format_schedule_row(row))
+
+        lines.append("")
+
+    if not has_rows:
+        return append_trial_studio_question(
+            "I don’t see any listed classes in the next few days from the live schedule."
+        )
+
+    return append_trial_studio_question("\n".join(lines).strip())
+
+
 
 # INACTIVITY
 
@@ -3567,24 +3775,8 @@ def handle_class_schedule_request(chat_id: str, text: str) -> str:
     if not is_class_schedule_request(text):
         return ""
 
-    task = (
-        "Answer the customer's class schedule, timetable, class timing, or slot question "
-        "using the Jal Yoga website content and knowledge file. Do not provide, mention, "
-        "or point to any Jal Yoga website URL. If schedule details are available in the "
-        "website content, summarize the relevant details clearly in text. If exact live "
-        "timings or slot availability are not available in the provided content, say you "
-        "do not have confirmed live timing or slot availability. Do not invent classes, "
-        "trainers, days, times, slots, prices, or promotions. Do not include [HANDOFF]. "
-        "End with exactly this "
-        f"question: {TRIAL_STUDIO_QUESTION}"
-    )
-    fallback = (
-        "I’m not fully sure of the live class timings from the information I have right now."
-    )
-    reply = append_trial_studio_question(knowledge_reply(chat_id, text, task, fallback), fallback)
-
     set_flow(chat_id, "trial_outlet")
-    return reply
+    return live_class_schedule_reply(text)
 
 
 # EXTRA OUTLET FLOW HANDLERS
