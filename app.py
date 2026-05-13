@@ -573,94 +573,20 @@ def load_knowledge_text() -> str:
 
 # Website knowledge is fetched at startup so the LLM can answer General Enquiry
 # questions using Jal Yoga's website while the rest of the chatbot stays unchanged.
-JALYOGA_WEBSITE_BASE_URL = os.getenv("JALYOGA_WEBSITE_BASE_URL", "https://www.jalyoga.com.sg").rstrip("/")
-WEBSITE_MAX_PAGES = int(os.getenv("WEBSITE_MAX_PAGES", "50"))
-
-
-def normalise_website_url(url: str) -> str:
-    clean = url.split("#", 1)[0].strip()
-
-    if clean.endswith("/") and clean != JALYOGA_WEBSITE_BASE_URL + "/":
-        clean = clean.rstrip("/")
-
-    return clean
-
-
-def is_jalyoga_url(url: str) -> bool:
-    return url.startswith(JALYOGA_WEBSITE_BASE_URL)
-
-
-def is_useful_website_url(url: str) -> bool:
-    lower = url.lower()
-
-    blocked_parts = [
-        "/wp-admin",
-        "/wp-json",
-        "/cart",
-        "/checkout",
-        "/my-account",
-        "?",
-    ]
-
-    blocked_extensions = [
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
-        ".pdf", ".zip", ".mp4", ".mov", ".css", ".js", ".ico",
-    ]
-
-    if not is_jalyoga_url(url):
-        return False
-
-    if any(part in lower for part in blocked_parts):
-        return False
-
-    if any(lower.endswith(ext) for ext in blocked_extensions):
-        return False
-
-    return True
-
-
-def discover_website_urls() -> List[str]:
-    urls: List[str] = []
-
-    sitemap_urls = [
-        f"{JALYOGA_WEBSITE_BASE_URL}/sitemap.xml",
-        f"{JALYOGA_WEBSITE_BASE_URL}/wp-sitemap.xml",
-        f"{JALYOGA_WEBSITE_BASE_URL}/page-sitemap.xml",
-    ]
-
-    for sitemap_url in sitemap_urls:
-        try:
-            response = requests.get(
-                sitemap_url,
-                timeout=10,
-                headers={"User-Agent": "Mozilla/5.0 JalYogaTelegramAssistant/1.0"},
-            )
-
-            if response.status_code != 200:
-                continue
-
-            found_urls = re.findall(
-                r"<loc>\s*(.*?)\s*</loc>",
-                response.text,
-                flags=re.IGNORECASE,
-            )
-
-            for found_url in found_urls:
-                clean = normalise_website_url(found_url)
-
-                if is_useful_website_url(clean) and clean not in urls:
-                    urls.append(clean)
-
-        except Exception as e:
-            print(f"SITEMAP FETCH ERROR for {sitemap_url}: {e}", flush=True)
-
-        if urls:
-            break
-
-    if not urls:
-        urls.append(JALYOGA_WEBSITE_BASE_URL)
-
-    return urls[:WEBSITE_MAX_PAGES]
+WEBSITE_KNOWLEDGE_URLS = [
+    "https://www.jalyoga.com.sg/",
+    "https://www.jalyoga.com.sg/our-studios/",
+    "https://www.jalyoga.com.sg/jal-schedule/",
+    "https://www.jalyoga.com.sg/memberships/",
+    "https://www.jalyoga.com.sg/yoga-classes/",
+    "https://www.jalyoga.com.sg/barre-classes/",
+    "https://www.jalyoga.com.sg/mat-pilates-classes/",
+    "https://www.jalyoga.com.sg/reformer-pilates-classes/",
+    "https://www.jalyoga.com.sg/infrared-heat/",
+    "https://www.jalyoga.com.sg/corporate-classes/",
+    "https://www.jalyoga.com.sg/face-yoga-workshop/",
+    "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
+]
 
 
 def html_to_text(html: str) -> str:
@@ -703,7 +629,7 @@ def html_to_text(html: str) -> str:
 def fetch_website_knowledge() -> str:
     parts = []
 
-    for url in discover_website_urls():
+    for url in WEBSITE_KNOWLEDGE_URLS:
         try:
             response = requests.get(
                 url,
