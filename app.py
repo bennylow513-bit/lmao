@@ -661,11 +661,11 @@ def fetch_website_knowledge() -> str:
     return "\n".join(parts).strip()
 
 
-LOCAL_KNOWLEDGE_TEXT = load_knowledge_text()
+# Website-only knowledge source.
+# We intentionally do NOT load knowledge.txt here.
+LOCAL_KNOWLEDGE_TEXT = ""
 WEBSITE_TEXT = fetch_website_knowledge()
-KNOWLEDGE_TEXT = "\n\n".join(
-    part for part in [LOCAL_KNOWLEDGE_TEXT, WEBSITE_TEXT] if part
-)
+KNOWLEDGE_TEXT = WEBSITE_TEXT
 
 
 # STUDIOS
@@ -2120,7 +2120,7 @@ def knowledge_reply(chat_id: str, user_text: str, task: str, fallback: str = "")
 You are Jal Yoga Singapore's Telegram customer-service assistant.
 
 Use ONLY:
-1. The knowledge file and Jal Yoga website content below.
+1. The Jal Yoga website content below.
 2. The live customer-service config below.
 3. The recent chat context below.
 
@@ -2129,23 +2129,22 @@ Language rule:
 - Translate all customer-facing wording into the customer language where possible.
 - If the customer message is only a number, keep replying in the stored customer language.
 - Preserve outlet names, menu numbers, phone numbers, Telegram IDs, WhatsApp links, and formatting.
-- Do not add information that is not in the knowledge file or Jal Yoga website content.
+- Do not add information that is not in the Jal Yoga website content.
 
 Core rules:
 - Help only with Jal Yoga enquiries.
 - Be warm, concise, professional, and helpful.
-- Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, or membership details.
+- Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, staff information, or membership details.
 - Do not give Jal Yoga website URLs to customers. Use the website content to answer in text instead.
-- For class schedule, timetable, class timing, or slot questions, answer from the Jal Yoga website content when available, do not send the schedule page link, and then ask: {TRIAL_STUDIO_QUESTION}
-- If information is not confirmed, say you are not fully sure and use [HANDOFF], except when the task specifically says to answer a class schedule question without handoff.
+- If the website content does not confirm the answer, say you are not fully sure based on the website and use [HANDOFF].
 - Ask only one question at a time.
 - Do not mention Meta, webhook, Python, OpenAI, code, or internal system details.
 
 Live customer-service config:
 {live_contact_config_text()}
 
-Knowledge file and Jal Yoga website content:
-{KNOWLEDGE_TEXT}
+Jal Yoga website content:
+{WEBSITE_TEXT}
 
 Recent chat:
 {history_text}
@@ -2161,7 +2160,6 @@ Task:
         "KNOWLEDGE REPLY ERROR",
     )
 
-
 def ask_llm(chat_id: str, user_text: str) -> str:
     if not client:
         return AI_NOT_CONFIGURED_REPLY
@@ -2173,7 +2171,7 @@ def ask_llm(chat_id: str, user_text: str) -> str:
 You are Jal Yoga Singapore's Telegram customer-service assistant.
 
 Use ONLY:
-1. The knowledge file and Jal Yoga website content below.
+1. The Jal Yoga website content below.
 2. The live customer-service config below.
 3. The recent chat context below.
 
@@ -2184,15 +2182,15 @@ Language:
 
 Core behaviour:
 - Answer only Jal Yoga enquiries.
-- Use only this knowledge file, Jal Yoga website content, recent chat context, and live contact config.
-- Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, or membership details.
+- Use only Jal Yoga website content, recent chat context, and live contact config.
+- Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, staff information, or membership details.
 - Do not give Jal Yoga website URLs to customers. Use the website content to answer in text instead.
 - For class schedule, timetable, class timing, or slot questions, answer from the Jal Yoga website content when available, do not send the schedule page link, and then ask: {TRIAL_STUDIO_QUESTION}
 - Ask one question at a time.
 - Continue the current flow based on recent chat context.
 - Use details the user already provided.
 - Do not restart a flow unless the user says MENU, START, HOME, MAIN MENU, or RESTART.
-- If information is not confirmed, say you are not fully sure and use [HANDOFF], except for class schedule questions where you should answer from available website content without sending a website link.
+- If information is not confirmed on the website, say you are not fully sure based on the website and use [HANDOFF], except for class schedule questions where you should answer from available website content without sending a website link.
 
 Customer Service handoff format:
 
@@ -2216,8 +2214,8 @@ Do not mention:
 Live config:
 {live_contact_config_text()}
 
-Knowledge file and Jal Yoga website content:
-{KNOWLEDGE_TEXT}
+Jal Yoga website content:
+{WEBSITE_TEXT}
 
 Current time in Singapore:
 {now_sg()}
@@ -2227,7 +2225,6 @@ Recent chat:
 """
 
     return openai_text_reply(instructions, user_text, AI_NOT_SURE_HANDOFF_REPLY, "OPENAI ERROR")
-
 
 def strip_handoff_token(text: str) -> str:
     return text.replace("[HANDOFF]", "").strip()
@@ -3355,7 +3352,7 @@ def fuzzy_phrase_match(text: str, phrases: List[str], threshold: float = 0.76) -
 
 CLASS_SCHEDULE_NON_ENGLISH_WORDS = phrase_list("jadual|时间表|時間表|課表|课程表")
 CLASS_SCHEDULE_KEYWORDS = phrase_list(
-    "schedule|schdule|sched|timetable|time table|class schedule|class timetable|class timing|class timings|class time|class times|what class|what classes|classes today|today class|today classes|today schedule|tomorrow schedule|available class|available classes|available slot|available slots|timeslot|timeslots"
+    "schedule|schdule|sched|timetable|time table|class schedule|class timetable|class timing|class timings|class time|class times|classes today|today class|today classes|today schedule|tomorrow schedule|available slot|available slots|timeslot|timeslots"
 )
 CLASS_SCHEDULE_CONTEXT_PATTERNS = [
     r"\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b.*\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b",
@@ -3381,7 +3378,156 @@ def is_class_schedule_request(text: str) -> bool:
     )
 
 
+
+CLASS_TYPE_KEYWORDS = phrase_list(
+    "what yoga|what yoga class|what yoga classes|what yoga do you have|what yoga do u have|what yoga do u guys have|"
+    "yoga classes|yoga class types|types of yoga|kind of yoga|kinds of yoga|"
+    "what class|what classes|what classes do you have|what classes do u have|what classes do u guys have|"
+    "class types|types of class|types of classes|kind of class|kinds of classes|"
+    "what pilates|pilates classes|pilates class types|what barre|barre classes|what reformer|reformer classes"
+)
+
+CLASS_TYPE_CONTEXT_PATTERNS = [
+    r"\b(what|which)\b.*\b(yoga|pilates|barre|reformer|class|classes)\b.*\b(have|offer|available|provide)\b",
+    r"\b(types?|kinds?)\b.*\b(yoga|pilates|barre|reformer|class|classes)\b",
+    r"\b(yoga|pilates|barre|reformer|class|classes)\b.*\b(types?|kinds?)\b",
+]
+
+
+def is_class_type_request(text: str) -> bool:
+    normalized = normalize(text)
+    clean = simple_text(text)
+
+    if not clean and not text.strip():
+        return False
+
+    # Timing/schedule questions should still go to schedule logic.
+    if is_class_schedule_request(text):
+        return False
+
+    return (
+        any(keyword in normalized for keyword in CLASS_TYPE_KEYWORDS)
+        or any(re.search(pattern, clean, flags=re.IGNORECASE) for pattern in CLASS_TYPE_CONTEXT_PATTERNS)
+    )
+
+
+MONTH_NAME_TO_NUMBER = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+
+def build_schedule_date(day: int, month: int, year: Optional[int] = None) -> Optional[datetime]:
+    """Build a Singapore date. If year is missing, choose the next matching date."""
+    today = datetime.now(ZoneInfo("Asia/Singapore")).date()
+
+    if year is None:
+        year = today.year
+
+    if year < 100:
+        year += 2000
+
+    try:
+        chosen = datetime(year, month, day, tzinfo=ZoneInfo("Asia/Singapore")).date()
+    except ValueError:
+        return None
+
+    # For messages like "15 May" without a year, use next year's date if this year's already passed.
+    if chosen < today and year == today.year:
+        try:
+            chosen = datetime(today.year + 1, month, day, tzinfo=ZoneInfo("Asia/Singapore")).date()
+        except ValueError:
+            return None
+
+    return datetime.combine(chosen, datetime.min.time())
+
+
+def explicit_schedule_dates(text: str) -> List[datetime]:
+    """Parse direct date requests like '15 May', 'May 15', '15/05', or '15-05-2026'."""
+    clean = normalize(text)
+    dates: List[datetime] = []
+
+    month_words = "|".join(sorted(MONTH_NAME_TO_NUMBER.keys(), key=len, reverse=True))
+
+    patterns = [
+        # 15 May, 15th May 2026
+        rf"\b(?P<day>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<month>{month_words})(?:\s+(?P<year>\d{{2,4}}))?\b",
+        # May 15, May 15th 2026
+        rf"\b(?P<month>{month_words})\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?(?:\s+(?P<year>\d{{2,4}}))?\b",
+    ]
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, clean, flags=re.IGNORECASE):
+            day = int(match.group("day"))
+            month = MONTH_NAME_TO_NUMBER[match.group("month").lower()]
+            year = int(match.group("year")) if match.groupdict().get("year") else None
+            parsed = build_schedule_date(day, month, year)
+
+            if parsed and parsed not in dates:
+                dates.append(parsed)
+
+    # Numeric dates. In Singapore, treat 15/05 as day/month.
+    for match in re.finditer(r"\b(?P<day>\d{1,2})[/-](?P<month>\d{1,2})(?:[/-](?P<year>\d{2,4}))?\b", clean):
+        day = int(match.group("day"))
+        month = int(match.group("month"))
+        year = int(match.group("year")) if match.group("year") else None
+        parsed = build_schedule_date(day, month, year)
+
+        if parsed and parsed not in dates:
+            dates.append(parsed)
+
+    return dates
+
+
+def has_schedule_date_request(text: str) -> bool:
+    clean = simple_text(text)
+
+    if explicit_schedule_dates(text):
+        return True
+
+    if any(word in clean.split() for word in ["today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
+        return True
+
+    return False
+
+
+def is_schedule_followup_request(chat_id: str, text: str) -> bool:
+    """Allow short follow-ups after a schedule reply, e.g. 'can i see 15 May'."""
+    flow = get_flow(chat_id)
+    clean = simple_text(text)
+
+    if flow.get("last_topic") != "schedule":
+        return False
+
+    if not clean:
+        return False
+
+    if detect_outlet_choice(text):
+        return False
+
+    if has_schedule_date_request(text):
+        return True
+
+    followup_words = {"next", "more", "another", "other", "show", "see", "view", "later", "after"}
+    return bool(set(clean.split()) & followup_words)
+
+
 def requested_schedule_dates(text: str, lookahead_days: int = 5) -> List[datetime]:
+    explicit_dates = explicit_schedule_dates(text)
+
+    if explicit_dates:
+        return explicit_dates
+
     t = normalize(text)
     today = datetime.now(ZoneInfo("Asia/Singapore")).date()
 
@@ -3772,10 +3918,13 @@ def append_trial_studio_question(reply: str, fallback: str = "") -> str:
 
 
 def handle_class_schedule_request(chat_id: str, text: str) -> str:
-    if not is_class_schedule_request(text):
+    # Normal schedule requests: "schedule", "classes today", "class timing", etc.
+    # Follow-up schedule requests: after showing schedule, allow short messages like
+    # "can i see 15 May" or "show tomorrow" even if they do not say "schedule" again.
+    if not is_class_schedule_request(text) and not is_schedule_followup_request(chat_id, text):
         return ""
 
-    set_flow(chat_id, "trial_outlet")
+    set_flow(chat_id, "trial_outlet", last_topic="schedule")
     return live_class_schedule_reply(text)
 
 
@@ -3915,29 +4064,31 @@ def handle_trial_flow(chat_id: str, text: str) -> str:
     if stage == "trial_outlet":
         outlet = detect_outlet_choice(text)
 
-        if not outlet:
-            recommendation = nearest_outlet_recommendation(text)
+        if outlet:
+            return next_flow_reply(
+                chat_id,
+                "trial_name",
+                f"Got it — {outlet}. 🙏\n\n"
+                "May I have your full name?",
+                outlet=outlet,
+            )
 
-            if recommendation:
-                top = recommendation["ranked_studios"][0]
-                outlet = top["name"]
-                return next_flow_reply(
-                    chat_id,
-                    "trial_name",
-                    format_trial_nearest_outlet_reply(recommendation),
-                    outlet=outlet,
-                )
+        if is_class_type_request(text):
+            return answer_flow_question_then_continue(chat_id, text)
 
-        if not outlet:
-            return trial_outlet_question()
+        recommendation = nearest_outlet_recommendation(text)
 
-        return next_flow_reply(
-            chat_id,
-            "trial_name",
-            f"Got it — {outlet}. 🙏\n\n"
-            "May I have your full name?",
-            outlet=outlet,
-        )
+        if recommendation:
+            top = recommendation["ranked_studios"][0]
+            outlet = top["name"]
+            return next_flow_reply(
+                chat_id,
+                "trial_name",
+                format_trial_nearest_outlet_reply(recommendation),
+                outlet=outlet,
+            )
+
+        return trial_outlet_question()
 
     if stage == "trial_name":
         if is_meaning_question(text):
@@ -4278,8 +4429,108 @@ def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
     )
 
 
+
+def is_flow_question_interrupt(text: str) -> bool:
+    """
+    Detect when the customer asks a real Jal Yoga question while the bot is waiting
+    for a flow answer like outlet, name, email, room, or details.
+    """
+    clean = simple_text(text)
+    normalized = normalize(text)
+
+    if not clean:
+        return False
+
+    # Do not interrupt for normal short flow answers.
+    if normalized.isdigit():
+        return False
+
+    if detect_outlet_choice(text, include_not_specified=True):
+        return False
+
+    if normalized in RESET_WORDS or normalized in OPT_IN_WORDS or normalized in OPT_OUT_WORDS:
+        return False
+
+    if is_customer_service_request(text) or is_customer_service_contact_request(text):
+        return False
+
+    if is_all_outlets_request(text) or is_nearest_outlet_request(text):
+        return True
+
+    if is_class_schedule_request(text) or is_schedule_followup_request(chat_id, text) or is_class_type_request(text):
+        return True
+
+    question_words = {
+        "what", "which", "where", "when", "who", "why", "how",
+        "can", "do", "does", "is", "are",
+    }
+
+    jal_terms = {
+        "yoga", "pilates", "barre", "reformer", "class", "classes",
+        "membership", "memberships", "price", "prices", "package", "packages",
+        "trial", "schedule", "timetable", "outlet", "studio", "studios",
+        "teacher", "trainer", "instructor", "staff", "hot", "infrared",
+    }
+
+    words = set(clean.split())
+
+    return bool(words & question_words and words & jal_terms)
+
+
+def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
+    """
+    Answer the customer's website question, then repeat the active flow question.
+    This prevents all flows from getting stuck when users ask questions mid-flow.
+    """
+    if is_class_type_request(text):
+        raw_answer = knowledge_reply(
+            chat_id,
+            text,
+            (
+                "The customer is asking what class types Jal Yoga has. "
+                "Answer using ONLY the Jal Yoga website content. "
+                "For yoga questions, use the Yoga Classes page content. "
+                "For pilates, barre, or reformer questions, use the matching website page content. "
+                "Mention specific class examples only if they appear in the website content. "
+                "Keep it concise and customer-friendly. "
+                "Do not give website URLs."
+            ),
+        )
+    elif is_class_schedule_request(text) or is_schedule_followup_request(chat_id, text):
+        return live_class_schedule_reply(text)
+    else:
+        raw_answer = knowledge_reply(
+            chat_id,
+            text,
+            (
+                "The customer asked a Jal Yoga question while they are already inside another form flow. "
+                "Answer using ONLY the Jal Yoga website content. "
+                "If the website does not confirm the answer, say you are not fully sure based on the website and use [HANDOFF]. "
+                "Do not give website URLs."
+            ),
+        )
+
+    needs_handoff = "[HANDOFF]" in raw_answer or "not fully sure" in raw_answer.lower()
+    answer = strip_handoff_token(raw_answer).strip()
+
+    # If the answer was uncertain, route to Customer Service.
+    if needs_handoff:
+        return queue_pending_handoff(chat_id, text, answer)
+
+    continue_question = repeat_current_flow_question(chat_id)
+
+    return (
+        f"{answer}\n\n"
+        f"To continue:\n"
+        f"{continue_question}"
+    )
+
+
 def handle_active_flow_stage(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
+
+    if stage and is_flow_question_interrupt(text):
+        return answer_flow_question_then_continue(chat_id, text)
 
     if is_all_outlets_request(text):
         clear_flow(chat_id)
