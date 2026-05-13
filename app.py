@@ -571,7 +571,99 @@ def load_knowledge_text() -> str:
         return ""
 
 
-KNOWLEDGE_TEXT = load_knowledge_text()
+# Website knowledge is fetched at startup so the LLM can answer General Enquiry
+# questions using Jal Yoga's website while the rest of the chatbot stays unchanged.
+WEBSITE_KNOWLEDGE_URLS = [
+    "https://www.jalyoga.com.sg/",
+    "https://www.jalyoga.com.sg/our-studios/",
+    "https://www.jalyoga.com.sg/jal-schedule/",
+    "https://www.jalyoga.com.sg/memberships/",
+    "https://www.jalyoga.com.sg/yoga-classes/",
+    "https://www.jalyoga.com.sg/barre-classes/",
+    "https://www.jalyoga.com.sg/mat-pilates-classes/",
+    "https://www.jalyoga.com.sg/reformer-pilates-classes/",
+    "https://www.jalyoga.com.sg/infrared-heat/",
+    "https://www.jalyoga.com.sg/corporate-classes/",
+    "https://www.jalyoga.com.sg/face-yoga-workshop/",
+    "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
+]
+
+
+def html_to_text(html: str) -> str:
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for tag in soup(["script", "style", "noscript", "svg"]):
+            tag.decompose()
+
+        text = soup.get_text("\n")
+
+    except Exception:
+        text = re.sub(r"<script.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "\n", text)
+
+    lines = []
+    seen = set()
+
+    for line in text.splitlines():
+        clean = re.sub(r"\s+", " ", line).strip()
+
+        if not clean:
+            continue
+
+        key = clean.lower()
+
+        # Avoid repeated navigation/footer/menu lines taking too much context.
+        if key in seen:
+            continue
+
+        seen.add(key)
+        lines.append(clean)
+
+    return "\n".join(lines)
+
+
+def fetch_website_knowledge() -> str:
+    parts = []
+
+    for url in WEBSITE_KNOWLEDGE_URLS:
+        try:
+            response = requests.get(
+                url,
+                timeout=12,
+                headers={
+                    "User-Agent": "Mozilla/5.0 JalYogaTelegramAssistant/1.0"
+                },
+            )
+
+            if response.status_code != 200:
+                print(f"WEBSITE SKIPPED {url}: {response.status_code}", flush=True)
+                continue
+
+            page_text = html_to_text(response.text)
+
+            if page_text:
+                parts.append(
+                    f"\n\n==================================================\n"
+                    f"JAL YOGA WEBSITE PAGE: {url}\n"
+                    f"==================================================\n"
+                    f"{page_text[:12000]}"
+                )
+
+        except Exception as e:
+            print(f"WEBSITE KNOWLEDGE FETCH ERROR for {url}: {e}", flush=True)
+
+    return "\n".join(parts).strip()
+
+
+LOCAL_KNOWLEDGE_TEXT = load_knowledge_text()
+WEBSITE_TEXT = fetch_website_knowledge()
+KNOWLEDGE_TEXT = "\n\n".join(
+    part for part in [LOCAL_KNOWLEDGE_TEXT, WEBSITE_TEXT] if part
+)
 
 
 # STUDIOS
@@ -1993,7 +2085,7 @@ def knowledge_reply(chat_id: str, user_text: str, task: str, fallback: str = "")
 You are Jal Yoga Singapore's Telegram customer-service assistant.
 
 Use ONLY:
-1. The knowledge file below.
+1. The knowledge file and Jal Yoga website content below.
 2. The live customer-service config below.
 3. The recent chat context below.
 
@@ -2002,7 +2094,7 @@ Language rule:
 - Translate all customer-facing wording into the customer language where possible.
 - If the customer message is only a number, keep replying in the stored customer language.
 - Preserve outlet names, menu numbers, phone numbers, Telegram IDs, links, and formatting.
-- Do not add information that is not in the knowledge file.
+- Do not add information that is not in the knowledge file or Jal Yoga website content.
 
 Core rules:
 - Help only with Jal Yoga enquiries.
@@ -2015,7 +2107,7 @@ Core rules:
 Live customer-service config:
 {live_contact_config_text()}
 
-Knowledge file:
+Knowledge file and Jal Yoga website content:
 {KNOWLEDGE_TEXT}
 
 Recent chat:
@@ -2044,7 +2136,7 @@ def ask_llm(chat_id: str, user_text: str) -> str:
 You are Jal Yoga Singapore's Telegram customer-service assistant.
 
 Use ONLY:
-1. The knowledge file below.
+1. The knowledge file and Jal Yoga website content below.
 2. The live customer-service config below.
 3. The recent chat context below.
 
@@ -2055,7 +2147,7 @@ Language:
 
 Core behaviour:
 - Answer only Jal Yoga enquiries.
-- Use only this knowledge file, recent chat context, and live contact config.
+- Use only this knowledge file, Jal Yoga website content, recent chat context, and live contact config.
 - Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, or membership details.
 - Ask one question at a time.
 - Continue the current flow based on recent chat context.
@@ -2085,7 +2177,7 @@ Do not mention:
 Live config:
 {live_contact_config_text()}
 
-Knowledge file:
+Knowledge file and Jal Yoga website content:
 {KNOWLEDGE_TEXT}
 
 Current time in Singapore:
@@ -2152,10 +2244,16 @@ def current_member_menu_text() -> str:
 def general_enquiry_menu_text() -> str:
     return (
         "General Enquiry 🙏\n\n"
-        "What would you like to know more about?\n\n"
-        "1. Studio Locations & Operating Hours\n"
-        "2. Class Types\n"
-        "3. Current Events & Retreat"
+        "You may ask me anything about Jal Yoga, such as:\n"
+        "- class types\n"
+        "- studio locations\n"
+        "- operating hours\n"
+        "- trial classes\n"
+        "- memberships\n"
+        "- facilities\n"
+        "- schedules\n"
+        "- events or retreats\n\n"
+        "What would you like to know?"
     )
 
 
@@ -3572,17 +3670,23 @@ def handle_member_service_flow(chat_id: str, text: str) -> str:
 def handle_general_enquiry_choice(chat_id: str, text: str) -> str:
     choice = normalize(text)
 
+    # Keep the old numbered shortcuts working for customers who still type 1/2/3.
     if choice == "1":
         clear_flow(chat_id)
         return studio_locations_text()
 
-    knowledge_choice = GENERAL_ENQUIRY_KNOWLEDGE_CHOICES.get(choice)
-    if knowledge_choice:
+    if choice == "2":
         clear_flow(chat_id)
-        return knowledge_reply(chat_id, text, *knowledge_choice)
+        return ask_llm(chat_id, "What class types does Jal Yoga offer?")
 
+    if choice == "3":
+        clear_flow(chat_id)
+        return ask_llm(chat_id, "What current events or retreats does Jal Yoga offer?")
+
+    # Main change: once the user is inside General Enquiry, any normal message
+    # goes to the LLM, which can answer from knowledge.txt + Jal Yoga website text.
     clear_flow(chat_id)
-    return ""
+    return ask_llm(chat_id, text)
 
 
 # EXTRA OUTLET FLOW HANDLERS
@@ -4334,6 +4438,21 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_customer_service_request(text):
         reply = start_customer_service_flow(chat_id, text)
         return finish_reply(chat_id, text, reply)
+
+    # GENERAL ENQUIRY SHORTCUT.
+    # If the customer types "general enquiry" / "general inquiry" directly,
+    # move them into the LLM-powered General Enquiry flow.
+    if norm in {
+        "general enquiry",
+        "general enquiries",
+        "general inquiry",
+        "general inquiries",
+        "general question",
+        "general questions",
+        "i have a question",
+        "i want to ask a question",
+    }:
+        return start_flow_reply(chat_id, text, "general_enquiry_menu", general_enquiry_menu_text())
 
     schedule_reply = handle_schedule_request(chat_id, text)
 
