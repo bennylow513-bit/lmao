@@ -576,6 +576,7 @@ def load_knowledge_text() -> str:
 WEBSITE_KNOWLEDGE_URLS = [
     "https://www.jalyoga.com.sg/",
     "https://www.jalyoga.com.sg/our-studios/",
+    "https://www.jalyoga.com.sg/our-instructors/",
     "https://www.jalyoga.com.sg/jal-schedule/",
     "https://www.jalyoga.com.sg/memberships/",
     "https://www.jalyoga.com.sg/yoga-classes/",
@@ -586,6 +587,10 @@ WEBSITE_KNOWLEDGE_URLS = [
     "https://www.jalyoga.com.sg/corporate-classes/",
     "https://www.jalyoga.com.sg/face-yoga-workshop/",
     "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
+    "https://www.jalyoga.com.sg/pilates-teacher-training-course/",
+    "https://www.jalyoga.com.sg/hatha-yoga-teacher-training-course/",
+    "https://www.jalyoga.com.sg/barre-teacher-training-course/",
+    "https://www.jalyoga.com.sg/sound-bath-teacher-training-course/",
 ]
 
 
@@ -3411,6 +3416,70 @@ def is_class_type_request(text: str) -> bool:
     )
 
 
+STAFF_INFO_KEYWORDS = phrase_list(
+    "instructor|instructors|teacher|teachers|trainer|trainers|staff|coach|coaches|"
+    "credentials|credential|qualification|qualifications|certified|certification|certifications|"
+    "highlights|highlight|profile|bio|biography|experience|background|"
+    "who is|more information about instructor|more info about instructor|"
+    "more information about teacher|more info about teacher|"
+    "more information about trainer|more info about trainer|"
+    "more information about staff|more info about staff|"
+    "know more about|info about"
+)
+
+
+def is_staff_info_request(text: str) -> bool:
+    clean = simple_text(text)
+    normalized = normalize(text)
+
+    if not clean:
+        return False
+
+    staff_words = {
+        "instructor", "instructors", "teacher", "teachers",
+        "trainer", "trainers", "staff", "coach", "coaches"
+    }
+    credential_words = {
+        "credential", "credentials", "qualification", "qualifications",
+        "certified", "certification", "certifications", "highlight",
+        "highlights", "profile", "bio", "biography", "experience", "background"
+    }
+    info_words = {"who", "what", "more", "info", "information", "about", "know", "profile"}
+    words = set(clean.split())
+
+    if words & staff_words:
+        return True
+
+    if any(keyword in normalized for keyword in STAFF_INFO_KEYWORDS):
+        return True
+
+    # Handles messages like: "can i know more about Amen" after a schedule answer.
+    if any(phrase in normalized for phrase in ["know more about", "more info about", "more information about"]):
+        return True
+
+    return bool((words & info_words) and (words & (staff_words | credential_words)))
+
+
+def staff_info_reply(chat_id: str, text: str) -> str:
+    return knowledge_reply(
+        chat_id,
+        text,
+        (
+            "The customer is asking for information about a Jal Yoga instructor, teacher, trainer, or staff member. "
+            "Use ONLY the Jal Yoga website content and recent chat context. "
+            "Look for matching instructor/profile/teacher-training content and provide confirmed credentials, certifications, experience, and highlights if they appear there. "
+            "If the person is only mentioned in the live schedule, you may say they appear to be listed as an instructor for that class, but do not invent credentials. "
+            "Do not invent biography, qualifications, nationality, experience, schedule, or personal details. "
+            "If the website content does not confirm more details about the person, say you are not fully sure based on the website and use [HANDOFF]. "
+            "Do not give website URLs."
+        ),
+        (
+            "I’m sorry — I’m not fully sure based on the website information I have.\n"
+            "[HANDOFF]"
+        ),
+    )
+
+
 MONTH_NAME_TO_NUMBER = {
     "jan": 1, "january": 1,
     "feb": 2, "february": 2,
@@ -4430,10 +4499,13 @@ def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
 
 
 
-def is_flow_question_interrupt(text: str) -> bool:
+def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     """
     Detect when the customer asks a real Jal Yoga question while the bot is waiting
-    for a flow answer like outlet, name, email, room, or details.
+    for a flow answer.
+
+    This intentionally ignores normal short answers like names, outlet numbers,
+    emails, phone numbers, or one/two-word form replies.
     """
     clean = simple_text(text)
     normalized = normalize(text)
@@ -4441,20 +4513,34 @@ def is_flow_question_interrupt(text: str) -> bool:
     if not clean:
         return False
 
-    # Do not interrupt for normal short flow answers.
+    # Do not interrupt normal short flow answers like "ben".
+    if len(clean.split()) <= 2 and not any(
+        word in clean
+        for word in [
+            "schedule", "timetable", "yoga", "pilates", "barre", "reformer",
+            "membership", "price", "outlet", "studio", "teacher", "trainer",
+            "instructor", "staff", "credential", "credentials", "profile",
+            "bio", "experience", "highlight", "highlights",
+        ]
+    ):
+        return False
+
     if normalized.isdigit():
         return False
 
-    if detect_outlet_choice(text, include_not_specified=True):
+    if normalized in RESET_WORDS or normalized in OPT_IN_WORDS or normalized in OPT_OUT_WORDS:
         return False
 
-    if normalized in RESET_WORDS or normalized in OPT_IN_WORDS or normalized in OPT_OUT_WORDS:
+    if detect_outlet_choice(text, include_not_specified=True):
         return False
 
     if is_customer_service_request(text) or is_customer_service_contact_request(text):
         return False
 
     if is_all_outlets_request(text) or is_nearest_outlet_request(text):
+        return True
+
+    if is_staff_info_request(text):
         return True
 
     if is_class_schedule_request(text) or is_schedule_followup_request(chat_id, text) or is_class_type_request(text):
@@ -4470,19 +4556,23 @@ def is_flow_question_interrupt(text: str) -> bool:
         "membership", "memberships", "price", "prices", "package", "packages",
         "trial", "schedule", "timetable", "outlet", "studio", "studios",
         "teacher", "trainer", "instructor", "staff", "hot", "infrared",
+        "credential", "credentials", "qualification", "qualifications",
+        "profile", "bio", "experience", "highlight", "highlights",
     }
 
     words = set(clean.split())
 
     return bool(words & question_words and words & jal_terms)
 
-
 def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
     """
     Answer the customer's website question, then repeat the active flow question.
     This prevents all flows from getting stuck when users ask questions mid-flow.
     """
-    if is_class_type_request(text):
+    if is_staff_info_request(text):
+        raw_answer = staff_info_reply(chat_id, text)
+
+    elif is_class_type_request(text):
         raw_answer = knowledge_reply(
             chat_id,
             text,
@@ -4529,7 +4619,24 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
 def handle_active_flow_stage(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
 
-    if stage and is_flow_question_interrupt(text):
+    # Only allow website-question interruption in stages where users commonly ask questions.
+    # Do not interrupt simple data-entry stages like name, email, phone, room, or message details.
+    interrupt_allowed_stages = {
+        "trial_outlet",
+        "trial_goal",
+        "trial_change_outlet",
+        "nearest_outlet_location",
+        "nearest_outlet_action",
+        "refer_friend_studio",
+        "staff_studio",
+        "contact_outlet",
+        "pending_handoff_outlet",
+        "main_menu",
+        "current_member_menu",
+        "general_enquiry_menu",
+    }
+
+    if stage in interrupt_allowed_stages and is_flow_question_interrupt(chat_id, text):
         return answer_flow_question_then_continue(chat_id, text)
 
     if is_all_outlets_request(text):
@@ -4804,6 +4911,16 @@ def process_message(chat_id: str, user_text: str) -> str:
             "contact_outlet",
             studio_prompt("Which outlet contact would you like?"),
         )
+
+    if is_staff_info_request(text):
+        answer = staff_info_reply(chat_id, text)
+
+        if "[HANDOFF]" in answer or "not fully sure" in answer.lower():
+            clean_answer = strip_handoff_token(answer).strip()
+            reply = queue_pending_handoff(chat_id, text, clean_answer)
+            return finish_reply(chat_id, text, reply)
+
+        return finish_reply(chat_id, text, strip_handoff_token(answer).strip())
 
     answer = ask_llm(chat_id, text)
 
