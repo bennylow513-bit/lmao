@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from html import unescape
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import requests
@@ -80,6 +81,9 @@ USER_LANGUAGE: Dict[str, str] = {}
 LIVE_SUPPORT_CHATS: Dict[str, Dict[str, str]] = {}
 SUPPORT_ACTIVE_CUSTOMER: Dict[str, str] = {}
 CHATLOG_CHAT_META: Dict[str, Dict[str, str]] = {}
+# Tracks when the bot just listed instructor names and is waiting
+# for the user to reply with a specific instructor name.
+STAFF_LIST_PENDING: Dict[str, bool] = {}
 
 INACTIVITY_WARNING_SECONDS = int(os.getenv("INACTIVITY_WARNING_SECONDS", "300"))
 INACTIVITY_CLOSE_SECONDS = int(os.getenv("INACTIVITY_CLOSE_SECONDS", "600"))
@@ -594,6 +598,59 @@ WEBSITE_KNOWLEDGE_URLS = [
 ]
 
 
+INSTRUCTOR_PROFILE_PATH_RE = re.compile(r"^/our-instructor/[^/]+/?$", re.IGNORECASE)
+
+
+def jal_yoga_host(netloc: str) -> str:
+    host = (netloc or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def canonical_website_url(url: str) -> str:
+    parsed = urlparse(url)
+
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+
+    path = parsed.path or "/"
+
+    if path != "/" and not path.endswith("/") and "." not in path.rsplit("/", 1)[-1]:
+        path += "/"
+
+    return f"{parsed.scheme}://{parsed.netloc.lower()}{path}"
+
+
+def discover_instructor_profile_urls(page_url: str, html: str) -> List[str]:
+    urls = []
+    seen = set()
+
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+        hrefs = [tag.get("href", "") for tag in soup.find_all("a", href=True)]
+    except Exception:
+        hrefs = re.findall(r"""href=["']([^"']+)["']""", html or "", flags=re.IGNORECASE)
+
+    for href in hrefs:
+        absolute_url = urljoin(page_url, href)
+        parsed = urlparse(absolute_url)
+
+        if jal_yoga_host(parsed.netloc) != "jalyoga.com.sg":
+            continue
+
+        if not INSTRUCTOR_PROFILE_PATH_RE.match(parsed.path or ""):
+            continue
+
+        clean_url = canonical_website_url(absolute_url)
+
+        if clean_url and clean_url not in seen:
+            seen.add(clean_url)
+            urls.append(clean_url)
+
+    return urls
+
+
 def html_to_text(html: str) -> str:
     try:
         from bs4 import BeautifulSoup
@@ -633,11 +690,25 @@ def html_to_text(html: str) -> str:
 
 def fetch_website_knowledge() -> str:
     parts = []
+    urls_to_fetch = list(WEBSITE_KNOWLEDGE_URLS)
+    fetched_urls = set()
 
-    for url in WEBSITE_KNOWLEDGE_URLS:
+    index = 0
+
+    while index < len(urls_to_fetch):
+        url = urls_to_fetch[index]
+        index += 1
+
+        canonical_url = canonical_website_url(url)
+
+        if not canonical_url or canonical_url in fetched_urls:
+            continue
+
+        fetched_urls.add(canonical_url)
+
         try:
             response = requests.get(
-                url,
+                canonical_url,
                 timeout=12,
                 headers={
                     "User-Agent": "Mozilla/5.0 JalYogaTelegramAssistant/1.0"
@@ -645,11 +716,15 @@ def fetch_website_knowledge() -> str:
             )
 
             if response.status_code != 200:
-                print(f"WEBSITE SKIPPED {url}: {response.status_code}", flush=True)
+                print(f"WEBSITE SKIPPED {canonical_url}: {response.status_code}", flush=True)
                 continue
 
+            for linked_url in discover_instructor_profile_urls(canonical_url, response.text):
+                if linked_url not in fetched_urls and linked_url not in urls_to_fetch:
+                    urls_to_fetch.append(linked_url)
+
             page_text = html_to_text(response.text)
-            page_label = url.rstrip("/").split("/")[-1] or "home"
+            page_label = canonical_url.rstrip("/").split("/")[-1] or "home"
             page_label = page_label.replace("-", " ").title()
 
             if page_text:
@@ -661,7 +736,7 @@ def fetch_website_knowledge() -> str:
                 )
 
         except Exception as e:
-            print(f"WEBSITE KNOWLEDGE FETCH ERROR for {url}: {e}", flush=True)
+            print(f"WEBSITE KNOWLEDGE FETCH ERROR for {canonical_url}: {e}", flush=True)
 
     return "\n".join(parts).strip()
 
@@ -1708,6 +1783,7 @@ def reset_chat_state(
     PENDING_HANDOFFS.pop(chat_id, None)
     clear_flow(chat_id)
     OUTLET_CONTEXT.pop(chat_id, None)
+    STAFF_LIST_PENDING.pop(chat_id, None)
     close_live_support_chat(chat_id)
 
     if include_trial:
@@ -3425,12 +3501,59 @@ STAFF_INFO_KEYWORDS = phrase_list(
     "instructor|instructors|teacher|teachers|trainer|trainers|staff|coach|coaches|"
     "credentials|credential|qualification|qualifications|certified|certification|certifications|"
     "highlights|highlight|profile|bio|biography|experience|background|"
-    "who is|more information about instructor|more info about instructor|"
+    "who is|who are|tell me about|tell me more about|"
+    "more information about instructor|more info about instructor|"
     "more information about teacher|more info about teacher|"
     "more information about trainer|more info about trainer|"
     "more information about staff|more info about staff|"
-    "know more about|info about"
+    "know more about|info about|information about|details about|"
+    "any info on|any information on|info on|information on|"
+    "do you have|list of teachers|list of instructors|list of trainers|"
+    "yoga teacher|yoga teachers|yoga instructor|yoga instructors|"
+    "pilates teacher|pilates teachers|pilates instructor|pilates instructors|"
+    "barre teacher|barre teachers|barre instructor|barre instructors|"
+    "who teaches|who is teaching|who runs|who leads"
 )
+
+
+STAFF_HANDOFF_PHRASES = phrase_list(
+    "talk to staff|speak to staff|connect me to staff|need staff help|staff help|"
+    "talk to an instructor|speak to an instructor|talk to a teacher|speak to a teacher|"
+    "talk to a trainer|speak to a trainer|contact staff|contact instructor|contact teacher|"
+    "contact trainer|message staff|message instructor|call staff"
+)
+
+
+def is_staff_handoff_request(text: str) -> bool:
+    clean = simple_text(text)
+
+    if not clean:
+        return False
+
+    words = set(clean.split())
+    staff_words = {
+        "instructor", "instructors", "teacher", "teachers",
+        "trainer", "trainers", "staff", "coach", "coaches"
+    }
+
+    if not words & staff_words:
+        return False
+
+    if any(phrase in clean for phrase in STAFF_HANDOFF_PHRASES):
+        return True
+
+    contact_words = {
+        "talk", "speak", "connect", "contact", "message", "call",
+        "whatsapp", "human", "agent", "live", "support", "helpdesk"
+    }
+    info_words = {
+        "about", "profile", "bio", "biography", "info", "information",
+        "know", "who", "credential", "credentials", "qualification",
+        "qualifications", "experience", "background", "highlight",
+        "highlights", "called", "named"
+    }
+
+    return bool(words & contact_words and not words & info_words)
 
 
 def is_staff_info_request(text: str) -> bool:
@@ -3438,6 +3561,9 @@ def is_staff_info_request(text: str) -> bool:
     normalized = normalize(text)
 
     if not clean:
+        return False
+
+    if is_staff_handoff_request(text):
         return False
 
     staff_words = {
@@ -3465,6 +3591,77 @@ def is_staff_info_request(text: str) -> bool:
     return bool((words & info_words) and (words & (staff_words | credential_words)))
 
 
+def is_generic_staff_query(text: str) -> bool:
+    """
+    True when the user is asking about staff/instructors generally without naming
+    a specific person. e.g. 'instructor?', 'do you have teachers?', 'tell me about your trainers'.
+    """
+    clean = simple_text(text)
+    if not clean:
+        return False
+
+    staff_words = {
+        "instructor", "instructors", "teacher", "teachers",
+        "trainer", "trainers", "staff", "coach", "coaches"
+    }
+    words = set(clean.split())
+
+    # Must mention staff in some form
+    if not (words & staff_words):
+        # phrases like 'who teaches', 'do you have teachers'
+        if not any(p in clean for p in [
+            "who teaches", "who is teaching", "who runs", "who leads",
+            "list of teachers", "list of instructors", "list of trainers"
+        ]):
+            return False
+
+    # Short generic queries (3 words or fewer) like "instructor?", "teachers"
+    if len(words) <= 3:
+        return True
+
+    # Longer phrasings that are still generic (no specific name guessable)
+    generic_phrases = [
+        "do you have", "tell me about your", "tell me more about your",
+        "list of", "list your", "who are your", "what teachers",
+        "what instructors", "what trainers", "any teachers", "any instructors",
+        "any trainers", "how many teachers", "how many instructors",
+        "how many trainers", "the teachers", "the instructors",
+        "the trainers", "your teachers", "your instructors", "your trainers",
+        "your staff", "your coaches", "more about your"
+    ]
+
+    return any(phrase in clean for phrase in generic_phrases)
+
+
+def is_short_name_reply(text: str) -> bool:
+    """
+    Detects when the user replies with just a name (e.g. 'Ravi', 'Sarah Yang').
+    Used after we listed instructor names to follow up about a specific person.
+    """
+    clean = (text or "").strip()
+    if not clean:
+        return False
+
+    # Must be 1-3 short words, mostly alphabetic
+    parts = clean.split()
+    if not (1 <= len(parts) <= 3):
+        return False
+
+    # Reject pure numbers, common command words
+    if normalize(clean) in RESET_WORDS | OPT_OUT_WORDS | OPT_IN_WORDS:
+        return False
+    if normalize(clean).isdigit():
+        return False
+
+    # Each word should be mostly letters
+    for p in parts:
+        letters = sum(1 for c in p if c.isalpha())
+        if letters < max(2, len(p) - 1):
+            return False
+
+    return True
+
+
 def staff_info_reply(chat_id: str, text: str) -> str:
     try:
         return knowledge_reply(
@@ -3474,9 +3671,13 @@ def staff_info_reply(chat_id: str, text: str) -> str:
                 "The customer is asking for information about a Jal Yoga instructor, teacher, trainer, or staff member. "
                 "Use ONLY the Jal Yoga website content and recent chat context. "
                 "Look for matching instructor/profile/teacher-training content and provide confirmed credentials, certifications, experience, and highlights if they appear there. "
+                "If the customer asks generically (e.g. 'instructor?', 'do you have teachers?', 'tell me about your instructors'), "
+                "give a short friendly overview and list the instructor names you can confirm on the website. "
+                "End the reply with: 'If you'd like to know more about a specific instructor, just send their name.' "
+                "If the customer names a specific instructor, share confirmed credentials, certifications, experience, and highlights from the website. "
                 "If the name is close to an instructor name shown in the recent live schedule, you may mention that they appear to be listed for that class, but do not invent credentials. "
                 "Do not invent biography, qualifications, nationality, experience, schedule, or personal details. "
-                "If the website content does not confirm credentials or highlights for that person, say you are not fully sure based on the website and use [HANDOFF]. "
+                "If the website content does not confirm credentials or highlights for that specific person, say you are not fully sure based on the website and use [HANDOFF]. "
                 "Do not give website URLs."
             ),
             (
@@ -3488,6 +3689,29 @@ def staff_info_reply(chat_id: str, text: str) -> str:
         print("STAFF INFO REPLY ERROR:", str(e), flush=True)
         traceback.print_exc()
         return "I’m sorry — I’m not fully sure based on the website information I have.\n[HANDOFF]"
+
+
+def handle_staff_info_request(chat_id: str, text: str) -> str:
+    generic = is_generic_staff_query(text)
+    answer = staff_info_reply(chat_id, text)
+
+    if "[HANDOFF]" in answer or "not fully sure" in answer.lower():
+        # Don't mark staff_list_pending if we're handing off
+        STAFF_LIST_PENDING.pop(chat_id, None)
+        clean_answer = strip_handoff_token(answer).strip()
+        return queue_pending_handoff(chat_id, text, clean_answer)
+
+    clean_answer = strip_handoff_token(answer).strip()
+
+    if generic:
+        # The bot just listed instructor names. Mark that we're waiting for
+        # the user to reply with a specific name, so we don't hand off.
+        STAFF_LIST_PENDING[chat_id] = True
+    else:
+        # User got a specific answer about an instructor; clear the pending flag.
+        STAFF_LIST_PENDING.pop(chat_id, None)
+
+    return clean_answer
 
 
 MONTH_NAME_TO_NUMBER = {
@@ -4609,6 +4833,24 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
 
     if staff_request:
         raw_answer = staff_info_reply(chat_id, text)
+        generic = is_generic_staff_query(text)
+
+        needs_handoff = "[HANDOFF]" in raw_answer or "not fully sure" in raw_answer.lower()
+        answer = strip_handoff_token(raw_answer).strip()
+
+        if needs_handoff:
+            STAFF_LIST_PENDING.pop(chat_id, None)
+            return queue_pending_handoff(chat_id, text, answer)
+
+        if generic:
+            # The bot just listed instructor names. Wait for a specific name reply.
+            STAFF_LIST_PENDING[chat_id] = True
+            # Don't pile the full main menu under the instructor list.
+            return answer
+
+        STAFF_LIST_PENDING.pop(chat_id, None)
+        # Specific instructor reply — still gentle continuation, no full menu dump.
+        return answer
 
     elif class_type_request:
         raw_answer = knowledge_reply(
@@ -4864,6 +5106,23 @@ def process_message(chat_id: str, user_text: str) -> str:
 
         return finish_reply(chat_id, text, build_customer_service_contact_reply(outlet))
 
+    # STAFF LIST FOLLOW-UP.
+    # If the bot just showed a list of instructor names and the user
+    # replies with a short name like "Ravi" or "Sarah Yang", treat it as
+    # asking about that specific instructor instead of falling through to
+    # the LLM (which would hand them off to Customer Service).
+    if (
+        STAFF_LIST_PENDING.get(chat_id)
+        and is_short_name_reply(text)
+        and not is_reset_request(text)
+        and not is_customer_service_request(text)
+        and not detect_outlet_choice(text)
+    ):
+        return finish_reply(chat_id, text, handle_staff_info_request(chat_id, text))
+
+    if "staff hub" not in norm and is_staff_info_request(text):
+        return finish_reply(chat_id, text, handle_staff_info_request(chat_id, text))
+
     # CUSTOMER SERVICE SHORTCUT.
     # User can ask for customer service anytime, in any supported language,
     # even while they are inside another flow like trial booking, schedule, or member help.
@@ -4953,14 +5212,7 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
     if is_staff_info_request(text):
-        answer = staff_info_reply(chat_id, text)
-
-        if "[HANDOFF]" in answer or "not fully sure" in answer.lower():
-            clean_answer = strip_handoff_token(answer).strip()
-            reply = queue_pending_handoff(chat_id, text, clean_answer)
-            return finish_reply(chat_id, text, reply)
-
-        return finish_reply(chat_id, text, strip_handoff_token(answer).strip())
+        return finish_reply(chat_id, text, handle_staff_info_request(chat_id, text))
 
     answer = ask_llm(chat_id, text)
 
