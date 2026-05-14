@@ -1897,9 +1897,9 @@ def is_outlet_contact_request(text: str) -> bool:
 
 
 # LANGUAGE
-LANGUAGE_SWITCH_WORDS = phrase_list("change|switch|translate|reply|speak|use|turn|make|convert|show|display|chnage|chage")
+LANGUAGE_SWITCH_WORDS = phrase_list("change|switch|translate|reply|speak|use|turn|make|convert|show|display|back|chnage|chage")
 LANGUAGE_SWITCH_EXACT = {
-    "English": set(phrase_list("english|eng|speak english|reply english|reply in english|use english|change to english|change into english|change it to english|change it into english|english please")),
+    "English": set(phrase_list("english|eng|back english|back to english|switch back to english|speak english|reply english|reply in english|use english|change to english|change into english|change it to english|change it into english|english please")),
     "Chinese": set(phrase_list("chinese|中文|华文|華文|mandarin|speak chinese|reply chinese|reply in chinese|use chinese|change to chinese|change into chinese|change it to chinese|change it into chinese|translate to chinese|translate into chinese|chinese please")),
     "Malay": set(phrase_list("malay|bahasa melayu|reply malay|reply in malay|use malay|change to malay|change into malay|change it to malay|change it into malay|translate to malay|malay please")),
     "Tamil": set(phrase_list("tamil|தமிழ்|reply tamil|reply in tamil|use tamil|change to tamil|change into tamil|change it to tamil|change it into tamil|translate to tamil|tamil please")),
@@ -1977,7 +1977,12 @@ def detect_language_switch_request(text: str) -> str:
         if t in exact_words:
             return language
 
-    if any(word in clean for word in LANGUAGE_SWITCH_WORDS):
+    # Natural follow-ups like "back to english" should be treated as a language switch.
+    for alias, language in LANGUAGE_NAME_ALIASES.items():
+        if clean in {f"back to {alias}", f"switch back to {alias}", f"reply back in {alias}"}:
+            return language
+
+    if any(word in clean.split() for word in LANGUAGE_SWITCH_WORDS):
         for language, (clean_words, raw_words) in LANGUAGE_SWITCH_KEYWORDS.items():
             if any(word in clean for word in clean_words) or any(word in raw for word in raw_words):
                 return language
@@ -3461,23 +3466,28 @@ def is_staff_info_request(text: str) -> bool:
 
 
 def staff_info_reply(chat_id: str, text: str) -> str:
-    return knowledge_reply(
-        chat_id,
-        text,
-        (
-            "The customer is asking for information about a Jal Yoga instructor, teacher, trainer, or staff member. "
-            "Use ONLY the Jal Yoga website content and recent chat context. "
-            "Look for matching instructor/profile/teacher-training content and provide confirmed credentials, certifications, experience, and highlights if they appear there. "
-            "If the person is only mentioned in the live schedule, you may say they appear to be listed as an instructor for that class, but do not invent credentials. "
-            "Do not invent biography, qualifications, nationality, experience, schedule, or personal details. "
-            "If the website content does not confirm more details about the person, say you are not fully sure based on the website and use [HANDOFF]. "
-            "Do not give website URLs."
-        ),
-        (
-            "I’m sorry — I’m not fully sure based on the website information I have.\n"
-            "[HANDOFF]"
-        ),
-    )
+    try:
+        return knowledge_reply(
+            chat_id,
+            text,
+            (
+                "The customer is asking for information about a Jal Yoga instructor, teacher, trainer, or staff member. "
+                "Use ONLY the Jal Yoga website content and recent chat context. "
+                "Look for matching instructor/profile/teacher-training content and provide confirmed credentials, certifications, experience, and highlights if they appear there. "
+                "If the name is close to an instructor name shown in the recent live schedule, you may mention that they appear to be listed for that class, but do not invent credentials. "
+                "Do not invent biography, qualifications, nationality, experience, schedule, or personal details. "
+                "If the website content does not confirm credentials or highlights for that person, say you are not fully sure based on the website and use [HANDOFF]. "
+                "Do not give website URLs."
+            ),
+            (
+                "I’m sorry — I’m not fully sure based on the website information I have.\n"
+                "[HANDOFF]"
+            ),
+        )
+    except Exception as e:
+        print("STAFF INFO REPLY ERROR:", str(e), flush=True)
+        traceback.print_exc()
+        return "I’m sorry — I’m not fully sure based on the website information I have.\n[HANDOFF]"
 
 
 MONTH_NAME_TO_NUMBER = {
@@ -4499,6 +4509,25 @@ def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
 
 
 
+def translate_text_to_language(text: str, language: str) -> str:
+    """Translate text to the requested language, even when switching back to English."""
+    if not text.strip() or language.lower() in {"unknown"}:
+        return text
+
+    return openai_text_reply(
+        (
+            f"Translate the assistant reply into {language}. "
+            "Translate every user-facing sentence fully. "
+            "Preserve outlet names, class names, instructor names, menu numbers, phone numbers, Telegram IDs, URLs, emojis, dates, times, and formatting. "
+            "Do not add new information."
+        ),
+        text,
+        text,
+        "LANGUAGE SWITCH TRANSLATION ERROR",
+        show_traceback=False,
+    )
+
+
 def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     """
     Detect when the customer asks a real Jal Yoga question while the bot is waiting
@@ -4569,10 +4598,19 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
     Answer the customer's website question, then repeat the active flow question.
     This prevents all flows from getting stuck when users ask questions mid-flow.
     """
-    if is_staff_info_request(text):
+    try:
+        staff_request = is_staff_info_request(text)
+        class_type_request = is_class_type_request(text)
+        schedule_request = is_class_schedule_request(text) or is_schedule_followup_request(chat_id, text)
+    except Exception as e:
+        print("FLOW INTERRUPT DETECT ERROR:", str(e), flush=True)
+        traceback.print_exc()
+        return repeat_current_flow_question(chat_id)
+
+    if staff_request:
         raw_answer = staff_info_reply(chat_id, text)
 
-    elif is_class_type_request(text):
+    elif class_type_request:
         raw_answer = knowledge_reply(
             chat_id,
             text,
@@ -4586,7 +4624,7 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
                 "Do not give website URLs."
             ),
         )
-    elif is_class_schedule_request(text) or is_schedule_followup_request(chat_id, text):
+    elif schedule_request:
         return live_class_schedule_reply(text)
     else:
         raw_answer = knowledge_reply(
@@ -4740,15 +4778,17 @@ def process_message(chat_id: str, user_text: str) -> str:
         )
 
         if last_assistant_reply:
+            translated_previous = translate_text_to_language(last_assistant_reply, language_switch)
             reply = (
                 f"Okay, I’ll reply in {language_switch} from now on. 🙏\n\n"
                 "Here is my previous reply translated:\n\n"
-                f"{last_assistant_reply}"
+                f"{translated_previous}"
             )
         else:
+            translated_question = translate_text_to_language(repeat_current_flow_question(chat_id), language_switch)
             reply = (
                 f"Okay, I’ll reply in {language_switch} from now on. 🙏\n\n"
-                f"{repeat_current_flow_question(chat_id)}"
+                f"{translated_question}"
             )
 
         return finish_reply(chat_id, text, reply)
