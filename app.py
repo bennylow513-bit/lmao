@@ -2288,18 +2288,16 @@ Language:
 - Reply in the customer's language where possible.
 - Preserve outlet names, menu numbers, phone numbers, Telegram IDs, WhatsApp links, and formatting.
 
-Core behaviour:
-- Answer only Jal Yoga enquiries.
-- Use only Jal Yoga website content, recent chat context, and live contact config.
+Core rules:
+- Help only with Jal Yoga enquiries.
+- Speak naturally and confidently. NEVER use phrases like "The website says" or "According to the text". Just state the facts directly.
+- Format neatly: Use line breaks between different topics. ALWAYS use short bullet points when listing items.
 - If the customer asks about a specific studio or outlet, you MUST include its full description, facilities, amenities, and parking information from the website content.
 - Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, staff information, or membership details.
-- Do not give Jal Yoga website URLs to customers. Use the website content to answer in text instead.
-- For class schedule, timetable, class timing, or slot questions, answer from the Jal Yoga website content when available, do not send the schedule page link, and then ask: {TRIAL_STUDIO_QUESTION}
-- Ask one question at a time.
-- Continue the current flow based on recent chat context.
-- Use details the user already provided.
-- Do not restart a flow unless the user says MENU, START, HOME, MAIN MENU, or RESTART.
-
+- Do not give Jal Yoga website URLs to customers. 
+- If the exact answer is not clearly available, say you are not fully sure and use [HANDOFF].
+- Ask only one question at a time.
+- Do not mention Meta, webhook, Python, OpenAI, code, or internal system details.
 Customer Service handoff format:
 
 I’ll pass this to our Customer Service team.
@@ -4841,8 +4839,7 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     if is_customer_service_request(text) or is_customer_service_contact_request(text):
         return False
 
-    # NEW FIX: Explicitly tell the bouncer to ignore nearest-outlet questions!
-    # This guarantees your custom location code gets to handle the request.
+    # FIX: Explicitly ignore nearest-outlet requests so your custom logic can run!
     if is_nearest_outlet_request(text):
         return False
 
