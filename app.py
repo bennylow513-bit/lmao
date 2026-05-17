@@ -3491,6 +3491,11 @@ CLASS_TYPE_CONTEXT_PATTERNS = [
     r"\b(types?|kinds?)\b.*\b(yoga|pilates|barre|reformer|class|classes)\b",
     r"\b(yoga|pilates|barre|reformer|class|classes)\b.*\b(types?|kinds?)\b",
 ]
+def is_membership_request(text: str) -> bool:
+    clean = simple_text(text)
+    words = set(clean.split())
+    member_words = {"membership", "memberships", "package", "packages", "price", "prices", "pricing"}
+    return bool(words & member_words)
 
 
 def is_class_type_request(text: str) -> bool:
@@ -4808,13 +4813,13 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
         return False
 
     # Do not interrupt normal short flow answers like "ben".
+   # Look for this block around line 1032 and add "membership" and "package" to the list:
     if len(clean.split()) <= 2 and not any(
         word in clean
         for word in [
             "schedule", "timetable", "yoga", "pilates", "barre", "reformer",
-            "membership", "price", "outlet", "studio", "teacher", "trainer",
-            "instructor", "staff", "credential", "credentials", "profile",
-            "bio", "experience", "highlight", "highlights",
+            "membership", "memberships", "package", "packages", "price", "prices", "pricing",
+            "outlet", "studio", "teacher", "trainer", "instructor", "staff",
         ]
     ):
         return False
@@ -4832,6 +4837,10 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
         return False
 
     # FIX: Explicitly ignore nearest-outlet requests so your custom logic can run!
+# Add this right before the question_words check (around line 1049):
+    if is_membership_request(text):
+        return True
+
     if is_nearest_outlet_request(text):
         return False
 
@@ -4871,6 +4880,7 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
         staff_request = is_staff_info_request(text)
         class_type_request = is_class_type_request(text)
         schedule_request = is_class_schedule_request(text) or is_schedule_followup_request(chat_id, text)
+        membership_request = is_membership_request(text) #
     except Exception as e:
         print("FLOW INTERRUPT DETECT ERROR:", str(e), flush=True)
         traceback.print_exc()
@@ -4911,6 +4921,18 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
                 "Do not give website URLs."
             ),
         )
+    elif membership_request: # Add this block
+        raw_answer = knowledge_reply(
+            chat_id,
+            text,
+            (
+                "The customer is asking about membership types, packages, or pricing. "
+                "Look through the website content for general membership information. "
+                "State what options are available clearly (e.g., unlimited passes, class packs) if found. "
+                "Since exact pricing requires a consultation, politely explain that package prices vary "
+                "based on commitment tiers and invite them to leave their details or speak to customer service for the latest rates."
+            ),
+        )    
     elif schedule_request:
         return live_class_schedule_reply(text)
     else:
@@ -5286,7 +5308,18 @@ def process_message(chat_id: str, user_text: str) -> str:
                 "event_outlet",
                 studio_prompt("Which studio would you like to check for events and workshops?")
             )
-        
+    if is_membership_request(text):
+        raw_answer = knowledge_reply(
+            chat_id,
+            text,
+            (
+                "The customer is asking about membership types, packages, or pricing. "
+                "Briefly explain the available options (Yoga, Pilates, Barre, Reformer options) from the website text. "
+                "Explain that rates depend on options and packages, and invite them to type CUSTOMER SERVICE if they want exact price quotes."
+            )
+        )
+        return finish_reply(chat_id, text, strip_handoff_token(raw_answer))
+    
     answer = ask_llm(chat_id, text)
 
     if "[HANDOFF]" in answer:
