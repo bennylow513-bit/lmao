@@ -2225,10 +2225,11 @@ Language rule:
 
 Core rules:
 - Help only with Jal Yoga enquiries.
-- Be warm, concise, professional, and helpful.
+- Speak naturally and confidently. NEVER use phrases like "The website says", "According to the text", or "Based on the information". Just state the facts directly.
+- Format neatly: Use line breaks between different topics to avoid walls of text. Do not over-share.
 - Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, staff information, or membership details.
-- Do not give Jal Yoga website URLs to customers. Use the website content to answer in text instead.
-- If the website content does not confirm the answer, say you are not fully sure based on the website and use [HANDOFF].
+- Do not give Jal Yoga website URLs to customers. 
+- If the exact answer is not clearly available, say you are not fully sure and use [HANDOFF]. Do NOT say "based on the website".
 - Ask only one question at a time.
 - Do not mention Meta, webhook, Python, OpenAI, code, or internal system details.
 
@@ -3681,9 +3682,8 @@ def staff_info_reply(chat_id: str, text: str) -> str:
                 "The customer is asking for information about a Jal Yoga instructor, teacher, trainer, or staff member. "
                 "Use ONLY the Jal Yoga website content and recent chat context. "
                 "Look for matching instructor/profile/teacher-training content and provide confirmed credentials, certifications, experience, and highlights if they appear there. "
-                "If the customer asks generically (e.g. 'instructor?', 'do you have teachers?', 'tell me about your instructors'), "
-                "give a short friendly overview and list the instructor names you can confirm on the website. "
-                "End the reply with: 'If you'd like to know more about a specific instructor, just send their name.' "
+                "If the customer asks generically (e.g. 'instructor?', 'do you have teachers?', 'tell me about your staff'), "
+                "do NOT list all the names. Just reply: 'Sure, which staff member would you like to know more about?' "
                 "If the customer names a specific instructor, share confirmed credentials, certifications, experience, and highlights from the website. "
                 "If the name is close to an instructor name shown in the recent live schedule, you may mention that they appear to be listed for that class, but do not invent credentials. "
                 "Do not invent biography, qualifications, nationality, experience, schedule, or personal details. "
@@ -4883,9 +4883,9 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
             chat_id,
             text,
             (
-                "The customer asked a Jal Yoga question while they are already inside another form flow. "
-                "Answer using ONLY the Jal Yoga website content. "
-                "If the website does not confirm the answer, say you are not fully sure based on the website and use [HANDOFF]. "
+                "The customer asked a general Jal Yoga question while they are already inside another form flow. "
+                "Answer directly and concisely. NEVER use phrases like 'The website says' or 'According to the website'. "
+                "Format neatly. If the information is missing, say you are not fully sure and use [HANDOFF]. "
                 "Do not give website URLs."
             ),
         )
