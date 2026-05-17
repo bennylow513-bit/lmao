@@ -590,11 +590,15 @@ WEBSITE_KNOWLEDGE_URLS = [
     "https://www.jalyoga.com.sg/infrared-heat/",
     "https://www.jalyoga.com.sg/corporate-classes/",
     "https://www.jalyoga.com.sg/face-yoga-workshop/",
+    "https://www.jalyoga.com.sg/me-face-yoga/,"
     "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
+    "https://www.jalyoga.com.sg/yoga-personal-training/",
+    "https://www.jalyoga.com.sg/reformer-pilates-personal-training/",
     "https://www.jalyoga.com.sg/pilates-teacher-training-course/",
     "https://www.jalyoga.com.sg/hatha-yoga-teacher-training-course/",
     "https://www.jalyoga.com.sg/barre-teacher-training-course/",
     "https://www.jalyoga.com.sg/sound-bath-teacher-training-course/",
+    "https://www.jalyoga.com.sg/me-face-yoga-teacher-training-course/",
 ]
 
 
