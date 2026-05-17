@@ -595,7 +595,7 @@ WEBSITE_KNOWLEDGE_URLS = [
     "https://www.jalyoga.com.sg/yoga-personal-training/",
     "https://www.jalyoga.com.sg/reformer-pilates-personal-training/",
     "https://www.jalyoga.com.sg/pilates-teacher-training-course/",
-    "https://www.jalyoga.com.sg/hatha-yoga-teacher-training-course/",
+    "https://www.jalyoga.com.sg/hatha-teacher-training-course/",
     "https://www.jalyoga.com.sg/barre-teacher-training-course/",
     "https://www.jalyoga.com.sg/sound-bath-teacher-training-course/",
     "https://www.jalyoga.com.sg/me-face-yoga-teacher-training-course/",
@@ -4894,8 +4894,17 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
     answer = strip_handoff_token(raw_answer).strip()
 
     # If the answer was uncertain, route to Customer Service.
+    # If the answer was uncertain, route to Customer Service.
+    # If the answer was uncertain, route to Customer Service.
     if needs_handoff:
         return queue_pending_handoff(chat_id, text, answer)
+
+    stage = get_flow_stage(chat_id)
+    
+    # If the user is just sitting at a menu, we don't need to repeat the giant menu text.
+    # The global 'Reply MENU' hint will handle it naturally.
+    if stage in {"main_menu", "current_member_menu", "general_enquiry_menu"}:
+        return answer
 
     continue_question = repeat_current_flow_question(chat_id)
 
