@@ -1477,19 +1477,17 @@ def is_nearest_outlet_request(text: str) -> bool:
     if not clean:
         return False
 
+    # 1. NEW: Automatically trigger if they say where they live/stay
+    location_phrases = ["i stay at", "i live at", "im at", "i am at", "my location", "im staying at", "living in"]
+    if any(phrase in clean for phrase in location_phrases):
+        return True
+
+    # 2. Add "go" and "visit" to the context words so "where to go" triggers it
     has_outlet_context = any(
         word in clean
         for word in [
-            "outlet",
-            "outlets",
-            "studio",
-            "studios",
-            "branch",
-            "branches",
-            "jal yoga",
-            "trial",
-            "trail",
-            "class",
+            "outlet", "outlets", "studio", "studios", "branch", "branches", 
+            "jal yoga", "trial", "trail", "class", "go", "visit"
         ]
     )
 
@@ -1511,6 +1509,7 @@ def is_nearest_outlet_request(text: str) -> bool:
         "recomend",
         "reccomend",
         "reccomed",
+        "reccomened", # Added typo
         "suggest",
         "pick",
         "choose",
@@ -1524,7 +1523,7 @@ def is_nearest_outlet_request(text: str) -> bool:
     ):
         return True
 
-    if has_outlet_context and any(phrase in clean for phrase in ["should i go", "should i visit", "which one"]):
+    if has_outlet_context and any(phrase in clean for phrase in ["should i go", "should i visit", "which one", "where do i go", "where to go", "where should i"]):
         return True
 
     return False
@@ -1823,6 +1822,10 @@ def remove_jal_yoga_website_urls(reply: str) -> str:
 
 def finish_reply(chat_id: str, user_text: str, reply: str, add_menu: bool = True) -> str:
     reply = remove_jal_yoga_website_urls(reply)
+    
+    # NEW: Automatically remove any markdown bolding stars from the AI's reply
+    reply = reply.replace("**", "")
+    
     final_reply = add_menu_hint(reply) if add_menu else reply
 
     add_history(chat_id, "user", user_text)
