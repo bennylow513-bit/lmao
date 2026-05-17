@@ -3693,16 +3693,12 @@ def staff_info_reply(chat_id: str, text: str) -> str:
             chat_id,
             text,
             (
-                "The customer is asking for information about a Jal Yoga instructor, teacher, trainer, or staff member. "
+                "The customer is asking for information about an instructor or teacher. "
                 "Use ONLY the Jal Yoga website content and recent chat context. "
-                "Look for matching instructor/profile/teacher-training content and provide confirmed credentials, certifications, experience, and highlights if they appear there. "
-                "If the customer asks generically (e.g. 'instructor?', 'do you have teachers?', 'tell me about your staff'), "
-                "do NOT list all the names. Just reply: 'Sure, which staff member would you like to know more about?' "
-                "If the customer names a specific instructor, share confirmed credentials, certifications, experience, and highlights from the website. "
-                "If the name is close to an instructor name shown in the recent live schedule, you may mention that they appear to be listed for that class, but do not invent credentials. "
-                "Do not invent biography, qualifications, nationality, experience, schedule, or personal details. "
-                "If the website content does not confirm credentials or highlights for that specific person, say you are not fully sure based on the website and use [HANDOFF]. "
-                "Do not give website URLs."
+                "IMPORTANT: Check the recent chat history first. If the customer asks who is teaching a specific class or course that was just mentioned, give them the exact instructor's name and details based on the website content. "
+                "If they ask a general question (like 'who are your teachers?') AND the chat history does not mention a specific class, reply EXACTLY with: 'Sure, which staff member would you like to know more about?' "
+                "If they name a specific instructor, share their confirmed credentials and highlights. "
+                "Do not invent details. If you are not sure, say you are not fully sure and use [HANDOFF]."
             ),
             (
                 "I’m sorry — I’m not fully sure based on the website information I have.\n"
@@ -3711,28 +3707,23 @@ def staff_info_reply(chat_id: str, text: str) -> str:
         )
     except Exception as e:
         print("STAFF INFO REPLY ERROR:", str(e), flush=True)
-        traceback.print_exc()
         return "I’m sorry — I’m not fully sure based on the website information I have.\n[HANDOFF]"
 
 
 def handle_staff_info_request(chat_id: str, text: str) -> str:
-    generic = is_generic_staff_query(text)
     answer = staff_info_reply(chat_id, text)
 
     if "[HANDOFF]" in answer or "not fully sure" in answer.lower():
-        # Don't mark staff_list_pending if we're handing off
         STAFF_LIST_PENDING.pop(chat_id, None)
         clean_answer = strip_handoff_token(answer).strip()
         return queue_pending_handoff(chat_id, text, clean_answer)
 
     clean_answer = strip_handoff_token(answer).strip()
 
-    if generic:
-        # The bot just listed instructor names. Mark that we're waiting for
-        # the user to reply with a specific name, so we don't hand off.
+    # Neat fix: only wait for a specific name if the bot actually asked the generic question
+    if "which staff member would you like to know more about" in clean_answer.lower():
         STAFF_LIST_PENDING[chat_id] = True
     else:
-        # User got a specific answer about an instructor; clear the pending flag.
         STAFF_LIST_PENDING.pop(chat_id, None)
 
     return clean_answer
