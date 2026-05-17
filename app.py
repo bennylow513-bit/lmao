@@ -3581,7 +3581,10 @@ def is_staff_info_request(text: str) -> bool:
     if not clean:
         return False
 
-    if is_staff_handoff_request(text):
+    # FIX: If the message mentions any class, course, training, or workshop keywords, 
+    # do NOT let it get intercepted by the staff profile handler.
+    course_keywords = {"yoga", "pilates", "barre", "reformer", "training", "course", "workshop", "retreat"}
+    if is_class_type_request(text) or any(word in normalized for word in course_keywords):
         return False
 
     staff_words = {
@@ -4878,9 +4881,13 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
     """
     try:
         staff_request = is_staff_info_request(text)
-        class_type_request = is_class_type_request(text)
+        
+        # FIX: Route any message with course keywords to the class description logic
+        course_keywords = {"yoga", "pilates", "barre", "reformer", "training", "course", "workshop", "retreat"}
+        class_type_request = is_class_type_request(text) or any(word in normalize(text) for word in course_keywords)
+        
         schedule_request = is_class_schedule_request(text) or is_schedule_followup_request(chat_id, text)
-        membership_request = is_membership_request(text) #
+        membership_request = is_membership_request(text)
     except Exception as e:
         print("FLOW INTERRUPT DETECT ERROR:", str(e), flush=True)
         traceback.print_exc()
