@@ -4803,9 +4803,6 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     """
     Detect when the customer asks a real Jal Yoga question while the bot is waiting
     for a flow answer.
-
-    This intentionally ignores normal short answers like names, outlet numbers,
-    emails, phone numbers, or one/two-word form replies.
     """
     clean = simple_text(text)
     normalized = normalize(text)
@@ -4837,7 +4834,9 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     if is_customer_service_request(text) or is_customer_service_contact_request(text):
         return False
 
-    if is_all_outlets_request(text) or is_nearest_outlet_request(text):
+    # FIX: We removed 'is_nearest_outlet_request' from here.
+    # Now, the bouncer will let your custom location code handle the request!
+    if is_all_outlets_request(text):
         return True
 
     if is_staff_info_request(text):
