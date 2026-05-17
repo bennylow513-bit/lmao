@@ -999,7 +999,8 @@ def location_candidates_from_text(text: str) -> List[str]:
 
     patterns = [
         r"(?:nearest|closest|nearer|closer|nearby).*(?:to|from|at|in|around|near)\s+(.+)$",
-        r"(?:i am|i'm|im|i stay|i'm staying|im staying|i live|i'm living|im living)\s+(?:at|in|near|around)?\s*(.+)$",
+        # Notice we added 'stay', 'staying', 'live', 'living' right here!
+        r"(?:i am|i'm|im|i stay|i'm staying|im staying|i live|i'm living|im living|stay|staying|live|living)\s+(?:at|in|near|around)?\s*(.+)$",
         r"(?:my location is|location is|address is|i am at|i'm at|im at)\s+(.+)$",
         r"(?:near|around|at|in|from)\s+(.+)$",
     ]
@@ -1477,12 +1478,12 @@ def is_nearest_outlet_request(text: str) -> bool:
     if not clean:
         return False
 
-    # 1. NEW: Automatically trigger if they say where they live/stay
-    location_phrases = ["i stay at", "i live at", "im at", "i am at", "my location", "im staying at", "living in"]
+    # Notice we added "stay at", "live at", and "staying at" to the end of this list!
+    location_phrases = ["i stay", "i live", "im at", "i am at", "my location", "im staying", "living in", "stay at", "live at", "staying at"]
     if any(phrase in clean for phrase in location_phrases):
         return True
 
-    # 2. Add "go" and "visit" to the context words so "where to go" triggers it
+    # 2. Add "go" and "visit" to context words
     has_outlet_context = any(
         word in clean
         for word in [
@@ -1509,7 +1510,7 @@ def is_nearest_outlet_request(text: str) -> bool:
         "recomend",
         "reccomend",
         "reccomed",
-        "reccomened", # Added typo
+        "reccomened", # Typo included
         "suggest",
         "pick",
         "choose",
@@ -5219,13 +5220,6 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_all_outlets_request(text):
         clear_flow(chat_id)
         return finish_reply(chat_id, text, studio_locations_text())
-
-    if norm in {"1", "2", "3", "4", "5"}:
-        set_flow(chat_id, "main_menu")
-        reply = handle_main_menu_choice(chat_id, text)
-
-        if reply:
-            return finish_reply(chat_id, text, reply)
 
     if is_class_cancellation_request(text):
         reply = class_cancellation_policy(
