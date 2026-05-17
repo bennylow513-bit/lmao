@@ -747,8 +747,18 @@ def fetch_website_knowledge() -> str:
 
 # Website-only knowledge source.
 # We intentionally do NOT load knowledge.txt here.
-LOCAL_KNOWLEDGE_TEXT = ""
-WEBSITE_TEXT = fetch_website_knowledge()
+# Website-only knowledge source.
+# We explicitly inject important static facts here that the web crawler might miss.
+LOCAL_KNOWLEDGE_TEXT = """
+==================================================
+JAL YOGA OPERATING HOURS (ALL STUDIOS)
+==================================================
+- Monday to Friday (Weekdays): 07:00 AM - 09:00 PM (0700 - 2100)
+- Saturday and Sunday (Weekends): 07:30 AM - 05:00 PM (0730 - 1700)
+*Note: Open every day including public holidays.*
+"""
+
+WEBSITE_TEXT = fetch_website_knowledge() + "\n\n" + LOCAL_KNOWLEDGE_TEXT
 KNOWLEDGE_TEXT = WEBSITE_TEXT
 
 
@@ -4800,10 +4810,6 @@ def translate_text_to_language(text: str, language: str) -> str:
 
 
 def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
-    """
-    Detect when the customer asks a real Jal Yoga question while the bot is waiting
-    for a flow answer.
-    """
     clean = simple_text(text)
     normalized = normalize(text)
 
@@ -4834,8 +4840,11 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     if is_customer_service_request(text) or is_customer_service_contact_request(text):
         return False
 
-    # FIX: We removed 'is_nearest_outlet_request' from here.
-    # Now, the bouncer will let your custom location code handle the request!
+    # NEW FIX: Explicitly tell the bouncer to ignore nearest-outlet questions!
+    # This guarantees your custom location code gets to handle the request.
+    if is_nearest_outlet_request(text):
+        return False
+
     if is_all_outlets_request(text):
         return True
 
