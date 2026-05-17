@@ -2551,6 +2551,7 @@ FLOW_QUESTION_BUILDERS.update(
         "staff_member_booking_details": lambda _flow: staff_booking_details_question(),
         "contact_outlet": lambda _flow: outlet_number_question(),
         "pending_handoff_outlet": lambda _flow: ask_outlet_before_handoff_text(),
+        "event_outlet": lambda _flow: studio_prompt("Which studio would you like to check for events and workshops?"),
     }
 )
 
@@ -4607,7 +4608,39 @@ def handle_corporate_flow(chat_id: str, text: str) -> str:
         )
 
     return ""
+def is_event_request(text: str) -> bool:
+    clean = simple_text(text)
+    words = set(clean.split())
+    event_words = {"event", "events", "workshop", "workshops", "retreat", "retreats"}
+    return bool(words & event_words)
 
+def handle_event_flow(chat_id: str, text: str) -> str:
+    flow = get_flow(chat_id)
+    stage = get_flow_stage(chat_id)
+
+    if stage == "event_outlet":
+        outlet = detect_outlet_choice(text)
+
+        if not outlet:
+            return (
+                "Please choose a valid studio:\n\n"
+                f"{studio_options_text()}"
+            )
+
+        clear_flow(chat_id)
+        remember_outlet_context(chat_id, outlet)
+
+        return knowledge_reply(
+            chat_id,
+            text,
+            (
+                f"The customer wants to know about events, retreats, or workshops at the {outlet} studio. "
+                f"Search the website content ONLY for workshops/events happening at {outlet}. "
+                "List them neatly using short bullet points. You MUST include a short description of what the workshop is about. "
+                f"If there are no events explicitly listed for {outlet}, politely say you don't see any scheduled there right now."
+            ),
+        )
+    return ""
 
 def handle_staff_hub_flow(chat_id: str, text: str) -> str:
     flow = get_flow(chat_id)
@@ -4936,6 +4969,7 @@ def handle_active_flow_stage(chat_id: str, text: str) -> str:
         "main_menu",
         "current_member_menu",
         "general_enquiry_menu",
+        "event_outlet",
     }
 
     if stage in interrupt_allowed_stages and is_flow_question_interrupt(chat_id, text):
@@ -4974,6 +5008,7 @@ def handle_active_flow_stage(chat_id: str, text: str) -> str:
         ("refer_friend_", handle_refer_friend_flow),
         ("corporate_", handle_corporate_flow),
         ("staff_", handle_staff_hub_flow),
+        ("event_", handle_event_flow),
     ):
         if stage.startswith(prefix):
             return flow_handler(chat_id, text)
@@ -5236,6 +5271,30 @@ def process_message(chat_id: str, user_text: str) -> str:
     if is_staff_info_request(text):
         return finish_reply(chat_id, text, handle_staff_info_request(chat_id, text))
 
+    if is_event_request(text):
+        outlet = detect_outlet_choice(text)
+        if outlet:
+            # If they already typed the outlet (e.g., "what workshops at katong"), answer immediately!
+            raw_answer = knowledge_reply(
+                chat_id,
+                text,
+                (
+                    f"The customer wants to know about events, retreats, or workshops at the {outlet} studio. "
+                    f"Search the website content ONLY for workshops/events happening at {outlet}. "
+                    "List them neatly using short bullet points. You MUST include a short description of what the workshop is about. "
+                    f"If there are no events explicitly listed for {outlet}, say you don't see any scheduled there right now."
+                )
+            )
+            return finish_reply(chat_id, text, strip_handoff_token(raw_answer))
+        else:
+            # If they didn't specify an outlet, start the flow to ask them
+            return start_flow_reply(
+                chat_id,
+                text,
+                "event_outlet",
+                studio_prompt("Which studio would you like to check for events and workshops?")
+            )
+        
     answer = ask_llm(chat_id, text)
 
     if "[HANDOFF]" in answer:
