@@ -672,22 +672,12 @@ def html_to_text(html: str) -> str:
         text = re.sub(r"<[^>]+>", "\n", text)
 
     lines = []
-    seen = set()
 
     for line in text.splitlines():
         clean = re.sub(r"\s+", " ", line).strip()
 
-        if not clean:
-            continue
-
-        key = clean.lower()
-
-        # Avoid repeated navigation/footer/menu lines taking too much context.
-        if key in seen:
-            continue
-
-        seen.add(key)
-        lines.append(clean)
+        if clean:
+            lines.append(clean)
 
     return "\n".join(lines)
 
