@@ -1962,18 +1962,20 @@ def is_customer_service_contact_request(text: str) -> bool:
 
 
 def is_outlet_contact_request(text: str) -> bool:
-    t = normalize(text)
+    clean = simple_text(text)
 
-    contact_words = [
+    contact_words = {
         "contact",
         "phone",
         "number",
         "whatsapp",
         "call",
         "hotline",
-    ]
+    }
 
-    return any(word in t for word in contact_words)
+    # By splitting the text into individual words first, 
+    # the bot won't accidentally trigger on words like "called" or "recall".
+    return any(word in clean.split() for word in contact_words)
 
 
 # LANGUAGE
@@ -3527,7 +3529,6 @@ STAFF_HANDOFF_PHRASES = phrase_list(
     "contact trainer|message staff|message instructor|call staff"
 )
 
-
 def is_staff_handoff_request(text: str) -> bool:
     clean = simple_text(text)
 
@@ -3537,7 +3538,8 @@ def is_staff_handoff_request(text: str) -> bool:
     words = set(clean.split())
     staff_words = {
         "instructor", "instructors", "teacher", "teachers",
-        "trainer", "trainers", "staff", "coach", "coaches"
+        "trainer", "trainers", "staff", "coach", "coaches",
+        "satff", "staf", "instuctor", "instructer", "techer", "traner"
     }
 
     if not words & staff_words:
@@ -3572,8 +3574,10 @@ def is_staff_info_request(text: str) -> bool:
 
     staff_words = {
         "instructor", "instructors", "teacher", "teachers",
-        "trainer", "trainers", "staff", "coach", "coaches"
+        "trainer", "trainers", "staff", "coach", "coaches",
+        "satff", "staf", "instuctor", "instructer", "techer", "traner"
     }
+
     credential_words = {
         "credential", "credentials", "qualification", "qualifications",
         "certified", "certification", "certifications", "highlight",
@@ -3606,8 +3610,10 @@ def is_generic_staff_query(text: str) -> bool:
 
     staff_words = {
         "instructor", "instructors", "teacher", "teachers",
-        "trainer", "trainers", "staff", "coach", "coaches"
+        "trainer", "trainers", "staff", "coach", "coaches",
+        "satff", "staf", "instuctor", "instructer", "techer", "traner"
     }
+    # ... (rest of the function stays exactly the same)
     words = set(clean.split())
 
     # Must mention staff in some form
