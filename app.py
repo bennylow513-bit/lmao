@@ -590,7 +590,7 @@ WEBSITE_KNOWLEDGE_URLS = [
     "https://www.jalyoga.com.sg/infrared-heat/",
     "https://www.jalyoga.com.sg/corporate-classes/",
     "https://www.jalyoga.com.sg/face-yoga-workshop/",
-    "https://www.jalyoga.com.sg/me-face-yoga/ ",
+    "https://www.jalyoga.com.sg/me-face-yoga/,"
     "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
     "https://www.jalyoga.com.sg/yoga-personal-training/",
     "https://www.jalyoga.com.sg/reformer-pilates-personal-training/",
@@ -2186,15 +2186,13 @@ def openai_text_reply(instructions: str, user_text: str, fallback: str, error_la
         return fallback
 
     try:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": instructions},
-                {"role": "user", "content": user_text},
-            ],
-            max_tokens=1000,
+            instructions=instructions,
+            input=user_text,
         )
-        reply = response.choices[0].message.content
+
+        reply = (response.output_text or "").strip()
         if reply:
             return reply
 
