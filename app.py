@@ -28,6 +28,10 @@ load_dotenv()
 
 app = Flask(__name__)
 
+@app.before_request
+def ensure_inactivity_thread():
+    start_inactivity_checker()
+
 # ENV VARIABLES
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -4097,6 +4101,19 @@ def inactivity_checker_loop() -> None:
                         "If you need help again, reply START or MENU anytime. 🙏",
                     )
 
+                    # NEW: Check if they are in a live chat and notify the staff
+                    live_chat = LIVE_SUPPORT_CHATS.get(chat_id, {})
+                    target_chat_id = live_chat.get("target_chat_id", "")
+                    
+                    if target_chat_id:
+                        try:
+                            send_telegram_message(
+                                str(target_chat_id),
+                                f"System Note: Customer {chat_id} was disconnected due to inactivity (10 minutes).",
+                            )
+                        except Exception:
+                            pass
+
                     reset_chat_state(chat_id, include_trial=True, include_inactivity=True)
 
             except Exception as e:
@@ -5749,7 +5766,7 @@ def build_bot_reply(chat_id: str, user_text: str) -> str:
     return final_reply
 
 
-if os.getenv("AUTO_START_INACTIVITY_CHECKER", "true").lower() not in {"0", "false", "no"}:
+#if os.getenv("AUTO_START_INACTIVITY_CHECKER", "true").lower() not in {"0", "false", "no"}:
     start_inactivity_checker()
 
 if __name__ == "__main__":
