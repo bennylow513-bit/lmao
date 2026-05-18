@@ -3696,7 +3696,7 @@ def staff_info_reply(chat_id: str, text: str) -> str:
                 "The customer is asking for information about an instructor or teacher. "
                 "Use ONLY the Jal Yoga website content and recent chat context. "
                 "IMPORTANT: Check the recent chat history first. If the customer asks who is teaching a specific class or course that was just mentioned, give them the exact instructor's name and details based on the website content. "
-                "If they ask a general question (like 'who are your teachers?') AND the chat history does not mention a specific class, reply EXACTLY with: 'Sure, which staff member would you like to know more about?' "
+                "If they ask a general question (like 'who are your teachers?') AND the chat history does not mention a specific class, list all the instructors found in the website content neatly using short bullet points. End your reply by asking EXACTLY: 'Which staff member would you like to know more about?' "
                 "If they name a specific instructor, share their confirmed credentials and highlights. "
                 "Do not invent details. If you are not sure, say you are not fully sure and use [HANDOFF]."
             ),
