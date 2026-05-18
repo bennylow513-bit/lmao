@@ -5813,9 +5813,10 @@ def build_bot_reply(chat_id: str, user_text: str) -> str:
 
 
 #if os.getenv("AUTO_START_INACTIVITY_CHECKER", "true").lower() not in {"0", "false", "no"}:
-    start_inactivity_checker()
+#    start_inactivity_checker()
 
 if __name__ == "__main__":
+    # Render passes the port as an environment variable, fallback to 5000 for local testing
     app.run(
         host="0.0.0.0",
         port=PORT,
