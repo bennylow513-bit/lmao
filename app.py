@@ -745,11 +745,9 @@ def fetch_website_knowledge() -> str:
 # We explicitly inject important static facts here that the web crawler might miss.
 LOCAL_KNOWLEDGE_TEXT = """
 ==================================================
-JAL YOGA OPERATING HOURS (ALL STUDIOS)
+JAL YOGA OPERATING HOURS
 ==================================================
-- Monday to Friday (Weekdays): 07:00 AM - 09:00 PM (0700 - 2100)
-- Saturday and Sunday (Weekends): 07:30 AM - 05:00 PM (0730 - 1700)
-*Note: Open every day including public holidays.*
+Please refer to the Jal Yoga website content sections for each studio's specific operating hours and schedules.
 """
 
 WEBSITE_TEXT = fetch_website_knowledge() + "\n\n" + LOCAL_KNOWLEDGE_TEXT
@@ -5216,6 +5214,28 @@ def process_message(chat_id: str, user_text: str) -> str:
         reset_chat_state(chat_id)
 
         return start_flow_reply(chat_id, text, "main_menu", main_menu_text())
+    
+    if any(word in norm for word in ["operating hours", "opening hours", "opening times", "what time do you open"]):
+        outlet = detect_outlet_choice(text)
+        if outlet:
+            raw_answer = knowledge_reply(
+                chat_id,
+                text,
+                (
+                    f"The customer wants to know the operating hours for the {outlet} studio. "
+                    f"Search the website content carefully for {outlet}'s opening or operating hours. "
+                    f"State the timings clearly. If the exact timings for this studio are not listed on the website, "
+                    f"politely inform them and tell them they can type CUSTOMER SERVICE to check with the team."
+                )
+            )
+            return finish_reply(chat_id, text, strip_handoff_token(raw_answer))
+        else:
+            return start_flow_reply(
+                chat_id,
+                text,
+                "general_enquiry_menu",
+                studio_prompt("Which studio's operating hours would you like to check?")
+            )
 
     if is_customer_service_contact_request(text):
         outlet = detect_outlet_choice(text) or get_flow_outlet(chat_id)
