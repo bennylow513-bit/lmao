@@ -887,6 +887,7 @@ def detect_outlet_from_text(text: str) -> str:
     if not clean:
         return ""
 
+    # 1. FAST PATH: Check basic English/hardcoded aliases first (saves API cost & time)
     padded = f" {clean} "
 
     for studio_name in studio_names():
@@ -894,6 +895,31 @@ def detect_outlet_from_text(text: str) -> str:
             if f" {alias} " in padded:
                 return studio_name
 
+    # 2. THE AI WAY: Ask OpenAI to translate and map the studio
+    if client:
+        valid_studios = ", ".join(studio_names())
+        instructions = (
+            "You are an assistant that extracts the Jal Yoga studio name from a user's message. "
+            f"The valid studios are: {valid_studios}. "
+            "The user might use ANY language (e.g., Chinese, Malay, Thai, Tamil, etc.) or bad spelling. "
+            "Return ONLY the exact English name of the matching studio from the valid list. "
+            "If the user does not mention a studio, or you are unsure, reply EXACTLY with 'UNKNOWN'."
+        )
+        
+        ai_result = openai_text_reply(
+            instructions, 
+            text, 
+            fallback="UNKNOWN", 
+            error_label="AI OUTLET DETECT ERROR",
+            show_traceback=False
+        ).strip()
+        
+        # Check if the AI returned a valid studio name
+        for studio_name in studio_names():
+            if studio_name.lower() == ai_result.lower():
+                return studio_name
+
+    # 3. FALLBACK: Old fuzzy matching just in case OpenAI is temporarily down
     words = clean.split()
     chunks = []
 
@@ -2228,7 +2254,7 @@ Language rule:
 - Customer language: {language}
 - Translate all customer-facing wording into the customer language where possible.
 - If the customer message is only a number, keep replying in the stored customer language.
-- Preserve outlet names, menu numbers, phone numbers, Telegram IDs, WhatsApp links, and formatting.
+- Preserve menu numbers, phone numbers, Telegram IDs, WhatsApp links, and formatting.
 - Do not add information that is not in the Jal Yoga website content.
 
 Core rules:
@@ -2281,7 +2307,7 @@ Use ONLY:
 Language:
 - Customer language: {language}
 - Reply in the customer's language where possible.
-- Preserve outlet names, menu numbers, phone numbers, Telegram IDs, WhatsApp links, and formatting.
+- Preserve menu numbers, phone numbers, Telegram IDs, WhatsApp links, and formatting.
 
 Core rules:
 - Help only with Jal Yoga enquiries.
@@ -3690,7 +3716,6 @@ def is_short_name_reply(text: str) -> bool:
 
     return True
 
-
 def staff_info_reply(chat_id: str, text: str) -> str:
     try:
         return knowledge_reply(
@@ -3700,7 +3725,8 @@ def staff_info_reply(chat_id: str, text: str) -> str:
                 "The customer is asking for information about an instructor or teacher. "
                 "Use ONLY the Jal Yoga website content and recent chat context. "
                 "IMPORTANT: Check the recent chat history first. If the customer asks who is teaching a specific class or course that was just mentioned, give them the exact instructor's name and details based on the website content. "
-                "If they ask a general question (like 'who are your teachers?') AND the chat history does not mention a specific class, list all the instructors found in the website content neatly using short bullet points. End your reply by asking EXACTLY: 'Which staff member would you like to know more about?' "
+                "If they ask a general question (like 'who are your teachers?') AND the chat history does not mention a specific class, list all the instructors found in the website content neatly using short bullet points. "
+                "End your reply by adding the exact tag [WAIT_FOR_NAME] followed by asking 'Which staff member would you like to know more about?' (translate the question into the customer's language, but DO NOT translate the [WAIT_FOR_NAME] tag). "
                 "If they name a specific instructor, share their confirmed credentials and highlights. "
                 "Do not invent details. If you are not sure, say you are not fully sure and use [HANDOFF]."
             ),
@@ -3724,9 +3750,9 @@ def handle_staff_info_request(chat_id: str, text: str) -> str:
 
     clean_answer = strip_handoff_token(answer).strip()
 
-    # Neat fix: only wait for a specific name if the bot actually asked the generic question
-    if "which staff member would you like to know more about" in clean_answer.lower():
+    if "[WAIT_FOR_NAME]" in clean_answer:
         STAFF_LIST_PENDING[chat_id] = True
+        clean_answer = clean_answer.replace("[WAIT_FOR_NAME]", "").strip()
     else:
         STAFF_LIST_PENDING.pop(chat_id, None)
 
@@ -4786,7 +4812,7 @@ def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
         (
             f"Translate the assistant reply into {language}. "
             "Translate every user-facing sentence fully. "
-            "Preserve outlet names, menu numbers, phone numbers, Telegram IDs, URLs, emojis, and formatting. "
+            "Preserve menu numbers, phone numbers, Telegram IDs, URLs, emojis, and formatting. "
             "Do not add new information."
         ),
         reply,
@@ -4806,7 +4832,7 @@ def translate_text_to_language(text: str, language: str) -> str:
         (
             f"Translate the assistant reply into {language}. "
             "Translate every user-facing sentence fully. "
-            "Preserve outlet names, class names, instructor names, menu numbers, phone numbers, Telegram IDs, URLs, emojis, dates, times, and formatting. "
+            "Preserve class names, menu numbers, phone numbers, Telegram IDs, URLs, emojis, dates, times, and formatting. "
             "Do not add new information."
         ),
         text,
