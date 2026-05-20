@@ -28,7 +28,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
-
+@app.before_request
+def ensure_inactivity_thread():
+    start_inactivity_checker()
 
 # ENV VARIABLES
 
@@ -580,88 +582,124 @@ def load_knowledge_text() -> str:
 
 # Website knowledge is fetched at startup so the LLM can answer General Enquiry
 # questions using Jal Yoga's website while the rest of the chatbot stays unchanged.
+WEBSITE_KNOWLEDGE_URLS = [
+    "https://www.jalyoga.com.sg/",
+    "https://www.jalyoga.com.sg/our-studios/",
+    "https://www.jalyoga.com.sg/our-instructors/",
+    "https://www.jalyoga.com.sg/jal-schedule/",
+    "https://www.jalyoga.com.sg/memberships/",
+    "https://www.jalyoga.com.sg/yoga-classes/",
+    "https://www.jalyoga.com.sg/barre-classes/",
+    "https://www.jalyoga.com.sg/mat-pilates-classes/",
+    "https://www.jalyoga.com.sg/reformer-pilates-classes/",
+    "https://www.jalyoga.com.sg/infrared-heat/",
+    "https://www.jalyoga.com.sg/corporate-classes/",
+    "https://www.jalyoga.com.sg/face-yoga-workshop/",
+    "https://www.jalyoga.com.sg/me-face-yoga/",
+    "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
+    "https://www.jalyoga.com.sg/yoga-personal-training/",
+    "https://www.jalyoga.com.sg/reformer-pilates-personal-training/",
+    "https://www.jalyoga.com.sg/pilates-teacher-training-course/",
+    "https://www.jalyoga.com.sg/hatha-teacher-training-course/",
+    "https://www.jalyoga.com.sg/barre-teacher-training-course/",
+    "https://www.jalyoga.com.sg/sound-bath-teacher-training-course/",
+    "https://www.jalyoga.com.sg/me-face-yoga-teacher-training-course/",
+]
+
+
+INSTRUCTOR_PROFILE_PATH_RE = re.compile(r"^/our-instructor/[^/]+/?$", re.IGNORECASE)
+
+
 def jal_yoga_host(netloc: str) -> str:
     host = (netloc or "").lower()
     return host[4:] if host.startswith("www.") else host
 
+
 def canonical_website_url(url: str) -> str:
     parsed = urlparse(url)
+
     if not parsed.scheme or not parsed.netloc:
         return ""
+
     path = parsed.path or "/"
+
     if path != "/" and not path.endswith("/") and "." not in path.rsplit("/", 1)[-1]:
         path += "/"
+
     return f"{parsed.scheme}://{parsed.netloc.lower()}{path}"
 
-def discover_internal_links(base_url: str, html: str) -> List[str]:
+
+def discover_instructor_profile_urls(page_url: str, html: str) -> List[str]:
     urls = []
     seen = set()
+
     try:
         from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(html, "html.parser")
         hrefs = [tag.get("href", "") for tag in soup.find_all("a", href=True)]
     except Exception:
         hrefs = re.findall(r"""href=["']([^"']+)["']""", html or "", flags=re.IGNORECASE)
 
     for href in hrefs:
-        absolute_url = urljoin(base_url, href)
+        absolute_url = urljoin(page_url, href)
         parsed = urlparse(absolute_url)
 
         if jal_yoga_host(parsed.netloc) != "jalyoga.com.sg":
             continue
 
-        if parsed.path.endswith((".jpg", ".png", ".pdf", ".zip")) or "#" in href:
+        if not INSTRUCTOR_PROFILE_PATH_RE.match(parsed.path or ""):
             continue
 
         clean_url = canonical_website_url(absolute_url)
+
         if clean_url and clean_url not in seen:
             seen.add(clean_url)
             urls.append(clean_url)
+
     return urls
+
 
 def html_to_text(html: str) -> str:
     try:
         from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(html, "html.parser")
+
         for tag in soup(["script", "style", "noscript", "svg"]):
             tag.decompose()
+
         text = soup.get_text("\n")
+
     except Exception:
         text = re.sub(r"<script.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"<style.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"<[^>]+>", "\n", text)
 
     lines = []
+
     for line in text.splitlines():
         clean = re.sub(r"\s+", " ", line).strip()
+
         if clean:
             lines.append(clean)
+
     return "\n".join(lines)
 
-def fetch_website_knowledge(max_pages: int = 30) -> str:
+
+def fetch_website_knowledge() -> str:
     parts = []
-    
-    # VIP LIST: The crawler reads these exact pages FIRST to guarantee consistent answers.
-    urls_to_fetch = [
-        "https://www.jalyoga.com.sg/",
-        "https://www.jalyoga.com.sg/our-studios/",
-        "https://www.jalyoga.com.sg/our-instructors/",
-        "https://www.jalyoga.com.sg/memberships/",
-        "https://www.jalyoga.com.sg/yoga-classes/",
-        "https://www.jalyoga.com.sg/face-yoga-workshop/",
-        "https://www.jalyoga.com.sg/me-face-yoga/",
-        "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
-        "https://www.jalyoga.com.sg/pilates-teacher-training-course/",
-        "https://www.jalyoga.com.sg/hatha-teacher-training-course/"
-    ]
+    urls_to_fetch = list(WEBSITE_KNOWLEDGE_URLS)
     fetched_urls = set()
+
     index = 0
 
-    while index < len(urls_to_fetch) and len(fetched_urls) < max_pages:
+    while index < len(urls_to_fetch):
         url = urls_to_fetch[index]
         index += 1
 
         canonical_url = canonical_website_url(url)
+
         if not canonical_url or canonical_url in fetched_urls:
             continue
 
@@ -671,15 +709,16 @@ def fetch_website_knowledge(max_pages: int = 30) -> str:
             response = requests.get(
                 canonical_url,
                 timeout=12,
-                headers={"User-Agent": "Mozilla/5.0 JalYogaTelegramAssistant/1.0"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 JalYogaTelegramAssistant/1.0"
+                },
             )
 
             if response.status_code != 200:
                 print(f"WEBSITE SKIPPED {canonical_url}: {response.status_code}", flush=True)
                 continue
 
-            # Discover new links automatically
-            for linked_url in discover_internal_links(canonical_url, response.text):
+            for linked_url in discover_instructor_profile_urls(canonical_url, response.text):
                 if linked_url not in fetched_urls and linked_url not in urls_to_fetch:
                     urls_to_fetch.append(linked_url)
 
@@ -699,6 +738,7 @@ def fetch_website_knowledge(max_pages: int = 30) -> str:
             print(f"WEBSITE KNOWLEDGE FETCH ERROR for {canonical_url}: {e}", flush=True)
 
     return "\n".join(parts).strip()
+
 
 # Website-only knowledge source.
 # We intentionally do NOT load knowledge.txt here.
@@ -3682,22 +3722,29 @@ def staff_info_reply(chat_id: str, text: str) -> str:
             chat_id,
             text,
             (
-                "The customer is asking for information about an instructor or teacher. "
-                "Use ONLY the Jal Yoga website content and recent chat context. "
-                "IMPORTANT: Check the recent chat history first. If the customer asks who is teaching a specific class or course that was just mentioned, give them the exact instructor's name and details based on the website content. "
-                "If they ask a general question (like 'who are your teachers?') AND the chat history does not mention a specific class, list all the instructors found in the website content neatly using short bullet points. You MUST include a brief, 1-2 sentence description of each instructor's background or specialties next to their name. "
-                "End your reply by adding the exact tag [WAIT_FOR_NAME] followed by asking 'Which staff member would you like to know more about?' (translate the question into the customer's language, but DO NOT translate the [WAIT_FOR_NAME] tag). "
-                "If they name a specific instructor, share their confirmed credentials and highlights. "
-                "Do not invent details. If you are not sure, say you are not fully sure and use [HANDOFF]."
+                "You are the Jal Yoga assistant. You have two distinct modes:\n\n"
+                
+                "MODE 1: LISTING (If the user asks 'Who are the teachers?' or similar general questions):\n"
+                "- List all instructors from the website using bullet points.\n"
+                "- End the reply with [WAIT_FOR_NAME] and ask: 'Which staff member would you like to know more about?'\n\n"
+                
+                "MODE 2: BIO (If the user provides a specific name like 'Dion', 'Aman', etc.):\n"
+                "- IGNORE the previous list format. DO NOT use bullet points.\n"
+                "- Search the website for the specific staff member's profile.\n"
+                "- Provide a professional bio summary including their credentials and teaching style.\n"
+                "- Format it clearly: 'Name: [Name]\nCredentials: [List]\nStyle: [Description]'.\n"
+                "- Do not repeat the name as a list item.\n\n"
+                
+                "CRITICAL: If the input is a single name, you MUST provide the bio (Mode 2). Never just echo the name back."
             ),
             (
-                "I’m sorry — I’m not fully sure based on the website information I have.\n"
+                "I’m sorry — I couldn't find a profile for that staff member in our records.\n"
                 "[HANDOFF]"
             ),
         )
     except Exception as e:
         print("STAFF INFO REPLY ERROR:", str(e), flush=True)
-        return "I’m sorry — I’m not fully sure based on the website information I have.\n[HANDOFF]"
+        return "I’m sorry — I’m not fully sure about that staff member.\n[HANDOFF]"
 
 
 def handle_staff_info_request(chat_id: str, text: str) -> str:
@@ -4819,14 +4866,15 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     if not clean:
         return False
 
+    # FIX 1: Added course, workshop, event, and retreat to this whitelist!
     # Do not interrupt normal short flow answers like "ben".
-   # Look for this block around line 1032 and add "membership" and "package" to the list:
     if len(clean.split()) <= 2 and not any(
         word in clean
         for word in [
             "schedule", "timetable", "yoga", "pilates", "barre", "reformer",
             "membership", "memberships", "package", "packages", "price", "prices", "pricing",
             "outlet", "studio", "teacher", "trainer", "instructor", "staff",
+            "course", "courses", "workshop", "workshops", "event", "events", "retreat", "retreats"
         ]
     ):
         return False
@@ -4837,8 +4885,8 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     if normalized in RESET_WORDS or normalized in OPT_IN_WORDS or normalized in OPT_OUT_WORDS:
         return False
 
-    if detect_outlet_choice(text, include_not_specified=True):
-        return False
+    # FIX 2: We completely deleted the `detect_outlet_choice` check from here!
+    # Now, questions like "What is the price for Katong?" will properly trigger an interruption.
 
     if is_customer_service_request(text) or is_customer_service_contact_request(text):
         return False
@@ -5229,7 +5277,6 @@ def process_message(chat_id: str, user_text: str) -> str:
     # replies with a short name like "Ravi" or "Sarah Yang", treat it as
     # asking about that specific instructor instead of falling through to
     # the LLM (which would hand them off to Customer Service).
-# STAFF LIST FOLLOW-UP.
     if (
         STAFF_LIST_PENDING.get(chat_id)
         and is_short_name_reply(text)
@@ -5243,47 +5290,74 @@ def process_message(chat_id: str, user_text: str) -> str:
         return finish_reply(chat_id, text, handle_staff_info_request(chat_id, text))
 
     # CUSTOMER SERVICE SHORTCUT.
+    # User can ask for customer service anytime, in any supported language,
+    # even while they are inside another flow like trial booking, schedule, or member help.
     if is_customer_service_request(text):
         reply = start_customer_service_flow(chat_id, text)
         return finish_reply(chat_id, text, reply)
 
     # GENERAL ENQUIRY SHORTCUT.
+    # If the customer types "general enquiry" / "general inquiry" directly,
+    # move them into the LLM-powered General Enquiry flow.
     if norm in {
-        "general enquiry", "general enquiries", "general inquiry", "general inquiries",
-        "general question", "general questions", "i have a question", "i want to ask a question",
+        "general enquiry",
+        "general enquiries",
+        "general inquiry",
+        "general inquiries",
+        "general question",
+        "general questions",
+        "i have a question",
+        "i want to ask a question",
     }:
         return start_flow_reply(chat_id, text, "general_enquiry_menu", general_enquiry_menu_text())
 
-    # --- 1. ACTIVE FLOW & INTERRUPTIONS COME FIRST ---
-    # This prevents the bot from restarting flows or getting stuck in loops!
-    flow_reply = handle_active_flow_stage(chat_id, text)
-    if flow_reply:
-        return finish_reply(chat_id, text, flow_reply)
-
-    # --- 2. TOPICAL REQUESTS ---
     class_schedule_reply = handle_class_schedule_request(chat_id, text)
+
     if class_schedule_reply:
         return finish_reply(chat_id, text, class_schedule_reply)
     
+    # --- NEW: Catch trial requests early so the LLM doesn't tell them to fill out a website form ---
     current_stage = get_flow_stage(chat_id)
     if not current_stage.startswith("trial_"):
-        trial_phrases = ["book a trial", "schedule a trial", "want a trial", "free trial", "any trial", "trial class", "trail lesson", "trial lesson"]
+        trial_phrases = [
+            "book a trial", "schedule a trial", "want a trial", "free trial", 
+            "any trial", "trial class", "trail lesson", "trial lesson"
+        ]
         if any(phrase in norm for phrase in trial_phrases) or norm in ["trial", "trail", "triel"] or ("trial" in norm and "available" in norm):
             return start_flow_reply(chat_id, text, "trial_outlet", trial_start_text())
+    # -----------------------------------------------------------------------------------------------
+
+    flow_reply = handle_active_flow_stage(chat_id, text)
+
+    if flow_reply:
+        return finish_reply(chat_id, text, flow_reply)
 
     if is_nearest_outlet_request(text):
-        return finish_reply(chat_id, text, handle_nearest_outlet_request(chat_id, text))
+        reply = handle_nearest_outlet_request(chat_id, text)
+        return finish_reply(chat_id, text, reply)
 
     if is_all_outlets_request(text):
         clear_flow(chat_id)
         return finish_reply(chat_id, text, studio_locations_text())
 
     if is_class_cancellation_request(text):
-        reply = class_cancellation_policy("To cancel a specific booked class, please reply with:\n- Outlet\n- Class name\n- Date and time")
+        reply = class_cancellation_policy(
+            "To cancel a specific booked class, please reply with:\n"
+            "- Outlet\n"
+            "- Class name\n"
+            "- Date and time"
+        )
+
         return finish_reply(chat_id, text, reply)
 
+
     if "refer" in norm and "friend" in norm:
-        return start_flow_reply(chat_id, text, "refer_friend_name", "That’s wonderful — what is your friend’s full name?")
+        return start_flow_reply(
+            chat_id,
+            text,
+            "refer_friend_name",
+            "That’s wonderful — what is your friend’s full name?",
+        )
 
     if "corporate" in norm or "partnership" in norm or "partnerships" in norm:
         return start_flow_reply(chat_id, text, "corporate_name", "Sure — may I have your full name?")
@@ -5293,33 +5367,56 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     if is_outlet_contact_request(text):
         outlet = detect_outlet_choice(text)
+
         if outlet:
-            return finish_reply(chat_id, text, build_outlet_contact_reply(outlet))
-        return start_flow_reply(chat_id, text, "contact_outlet", studio_prompt("Which outlet contact would you like?"))
+            reply = build_outlet_contact_reply(outlet)
+            return finish_reply(chat_id, text, reply)
+
+        return start_flow_reply(
+            chat_id,
+            text,
+            "contact_outlet",
+            studio_prompt("Which outlet contact would you like?"),
+        )
+
+    if is_staff_info_request(text):
+        return finish_reply(chat_id, text, handle_staff_info_request(chat_id, text))
 
     if is_event_request(text):
         outlet = detect_outlet_choice(text)
         if outlet:
+            # If they already typed the outlet (e.g., "what workshops at katong"), answer immediately!
             raw_answer = knowledge_reply(
-                chat_id, text,
-                (f"The customer wants to know about events, retreats, or workshops at the {outlet} studio. "
-                 f"Search the website content ONLY for workshops/events happening at {outlet}. "
-                 "List them neatly using short bullet points. You MUST include a short description of what the workshop is about. "
-                 f"If there are no events explicitly listed for {outlet}, say you don't see any scheduled there right now.")
+                chat_id,
+                text,
+                (
+                    f"The customer wants to know about events, retreats, or workshops at the {outlet} studio. "
+                    f"Search the website content ONLY for workshops/events happening at {outlet}. "
+                    "List them neatly using short bullet points. You MUST include a short description of what the workshop is about. "
+                    f"If there are no events explicitly listed for {outlet}, say you don't see any scheduled there right now."
+                )
             )
             return finish_reply(chat_id, text, strip_handoff_token(raw_answer))
-        return start_flow_reply(chat_id, text, "event_outlet", studio_prompt("Which studio would you like to check for events and workshops?"))
-
+        else:
+            # If they didn't specify an outlet, start the flow to ask them
+            return start_flow_reply(
+                chat_id,
+                text,
+                "event_outlet",
+                studio_prompt("Which studio would you like to check for events and workshops?")
+            )
     if is_membership_request(text):
         raw_answer = knowledge_reply(
-            chat_id, text,
-            ("The customer is asking about membership types, packages, or pricing. "
-             "Briefly explain the available options (Yoga, Pilates, Barre, Reformer options) from the website text. "
-             "Explain that rates depend on options and packages, and invite them to type CUSTOMER SERVICE if they want exact price quotes.")
+            chat_id,
+            text,
+            (
+                "The customer is asking about membership types, packages, or pricing. "
+                "Briefly explain the available options (Yoga, Pilates, Barre, Reformer options) from the website text. "
+                "Explain that rates depend on options and packages, and invite them to type CUSTOMER SERVICE if they want exact price quotes."
+            )
         )
         return finish_reply(chat_id, text, strip_handoff_token(raw_answer))
-
-    # --- 3. FINAL FALLBACK (LLM) ---
+    
     answer = ask_llm(chat_id, text)
 
     if "[HANDOFF]" in answer:
@@ -5337,9 +5434,11 @@ def process_message(chat_id: str, user_text: str) -> str:
             f"I’ve sent this summary to our {outlet} Customer Service team on Telegram.",
             "Customer Service Telegram group is not configured yet.",
         )
+
         return finish_reply(chat_id, text, reply)
 
     final_reply = add_customer_service_id_note(strip_handoff_token(answer), chat_id)
+
     return finish_reply(chat_id, text, final_reply)
 
 
