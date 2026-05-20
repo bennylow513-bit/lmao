@@ -4844,7 +4844,17 @@ def translate_text_to_language(text: str, language: str) -> str:
 def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     clean = simple_text(text)
     normalized = normalize(text)
-
+    
+    jal_terms = {
+        "yoga", "pilates", "barre", "reformer", "class", "classes",
+        "membership", "memberships", "price", "prices", "package", "packages",
+        "trial", "schedule", "timetable", "outlet", "studio", "studios",
+        "teacher", "trainer", "instructor", "staff", "hot", "infrared",
+        "credential", "credentials", "qualification", "qualifications",
+        "profile", "bio", "experience", "highlight", "highlights",
+        # Add these new terms so the bot recognizes them as valid questions!
+        "course", "courses", "workshop", "workshops", "retreat", "retreats"
+    }
     if not clean:
         return False
 
@@ -4991,24 +5001,20 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
     answer = strip_handoff_token(raw_answer).strip()
 
     # If the answer was uncertain, route to Customer Service.
-    # If the answer was uncertain, route to Customer Service.
-    # If the answer was uncertain, route to Customer Service.
     if needs_handoff:
         return queue_pending_handoff(chat_id, text, answer)
 
     stage = get_flow_stage(chat_id)
     
-    # If the user is just sitting at a menu, we don't need to repeat the giant menu text.
-    # The global 'Reply MENU' hint will handle it naturally.
+    # If the user is just sitting at a menu, we don't need a continuation prompt.
     if stage in {"main_menu", "current_member_menu", "general_enquiry_menu"}:
         return answer
 
-    continue_question = repeat_current_flow_question(chat_id)
-
+    # We intentionally DO NOT use clear_flow(chat_id) here.
+    # The bot will quietly remember exactly where the user left off.
     return (
         f"{answer}\n\n"
-        f"To continue:\n"
-        f"{continue_question}"
+        "(Whenever you're ready, just reply to my previous question to continue your booking, or type MENU to start over.)"
     )
 
 
