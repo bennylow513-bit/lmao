@@ -581,33 +581,14 @@ def load_knowledge_text() -> str:
 
 # Website knowledge is fetched at startup so the LLM can answer General Enquiry
 # questions using Jal Yoga's website while the rest of the chatbot stays unchanged.
+# The crawler will start here and automatically discover other internal pages.
+# You only need to provide the main entry points!
 WEBSITE_KNOWLEDGE_URLS = [
     "https://www.jalyoga.com.sg/",
     "https://www.jalyoga.com.sg/our-studios/",
-    "https://www.jalyoga.com.sg/our-instructors/",
     "https://www.jalyoga.com.sg/jal-schedule/",
     "https://www.jalyoga.com.sg/memberships/",
-    "https://www.jalyoga.com.sg/yoga-classes/",
-    "https://www.jalyoga.com.sg/barre-classes/",
-    "https://www.jalyoga.com.sg/mat-pilates-classes/",
-    "https://www.jalyoga.com.sg/reformer-pilates-classes/",
-    "https://www.jalyoga.com.sg/infrared-heat/",
-    "https://www.jalyoga.com.sg/corporate-classes/",
-    "https://www.jalyoga.com.sg/face-yoga-workshop/",
-    "https://www.jalyoga.com.sg/me-face-yoga/",
-    "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
-    "https://www.jalyoga.com.sg/yoga-personal-training/",
-    "https://www.jalyoga.com.sg/reformer-pilates-personal-training/",
-    "https://www.jalyoga.com.sg/pilates-teacher-training-course/",
-    "https://www.jalyoga.com.sg/hatha-teacher-training-course/",
-    "https://www.jalyoga.com.sg/barre-teacher-training-course/",
-    "https://www.jalyoga.com.sg/sound-bath-teacher-training-course/",
-    "https://www.jalyoga.com.sg/me-face-yoga-teacher-training-course/",
 ]
-
-
-INSTRUCTOR_PROFILE_PATH_RE = re.compile(r"^/our-instructor/[^/]+/?$", re.IGNORECASE)
-
 
 def jal_yoga_host(netloc: str) -> str:
     host = (netloc or "").lower()
@@ -628,7 +609,7 @@ def canonical_website_url(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc.lower()}{path}"
 
 
-def discover_instructor_profile_urls(page_url: str, html: str) -> List[str]:
+def discover_internal_urls(page_url: str, html: str) -> List[str]:
     urls = []
     seen = set()
 
@@ -647,7 +628,14 @@ def discover_instructor_profile_urls(page_url: str, html: str) -> List[str]:
         if jal_yoga_host(parsed.netloc) != "jalyoga.com.sg":
             continue
 
-        if not INSTRUCTOR_PROFILE_PATH_RE.match(parsed.path or ""):
+        path = (parsed.path or "").lower()
+
+        # Ignore common media/document files
+        if any(path.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".pdf", ".mp4", ".zip", ".gif"]):
+            continue
+
+        # Ignore specific WordPress/irrelevant paths
+        if any(p in path for p in ["/wp-content/", "/wp-admin/", "/wp-includes/", "/category/", "/tag/"]):
             continue
 
         clean_url = canonical_website_url(absolute_url)
@@ -686,14 +674,14 @@ def html_to_text(html: str) -> str:
     return "\n".join(lines)
 
 
-def fetch_website_knowledge() -> str:
+def fetch_website_knowledge(max_pages: int = 40) -> str:
     parts = []
     urls_to_fetch = list(WEBSITE_KNOWLEDGE_URLS)
     fetched_urls = set()
 
     index = 0
 
-    while index < len(urls_to_fetch):
+    while index < len(urls_to_fetch) and len(fetched_urls) < max_pages:
         url = urls_to_fetch[index]
         index += 1
 
@@ -717,7 +705,8 @@ def fetch_website_knowledge() -> str:
                 print(f"WEBSITE SKIPPED {canonical_url}: {response.status_code}", flush=True)
                 continue
 
-            for linked_url in discover_instructor_profile_urls(canonical_url, response.text):
+            # Automatically discover and enqueue any internal links
+            for linked_url in discover_internal_urls(canonical_url, response.text):
                 if linked_url not in fetched_urls and linked_url not in urls_to_fetch:
                     urls_to_fetch.append(linked_url)
 
