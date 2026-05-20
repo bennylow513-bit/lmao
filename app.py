@@ -5010,27 +5010,38 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
     if stage in {"main_menu", "current_member_menu", "general_enquiry_menu"}:
         return answer
 
-    # We intentionally DO NOT use clear_flow(chat_id) here.
+   # We intentionally DO NOT use clear_flow(chat_id) here.
     # The bot will quietly remember exactly where the user left off.
     return (
         f"{answer}\n\n"
-        "(Whenever you're ready, just reply to my previous question to continue your booking, or type MENU to start over.)"
+        "(Whenever you're ready, just reply to my previous question to continue your request, or type MENU to start over.)"
     )
 
 
 def handle_active_flow_stage(chat_id: str, text: str) -> str:
     stage = get_flow_stage(chat_id)
 
-    # Only allow website-question interruption in stages where users commonly ask questions.
-    # Do not interrupt simple data-entry stages like name, email, phone, room, or message details.
+    # Allow website-question interruptions in ALL stages, including detail-filling!
     interrupt_allowed_stages = {
         "trial_outlet",
+        "trial_name",
         "trial_goal",
         "trial_change_outlet",
         "nearest_outlet_location",
         "nearest_outlet_action",
+        "refer_friend_name",
+        "refer_friend_contact",
         "refer_friend_studio",
+        "corporate_name",
+        "corporate_email",
+        "corporate_message",
+        "staff_name",
         "staff_studio",
+        "staff_room",
+        "staff_member_booking_details",
+        "member_cancel_details",
+        "member_suspension_details",
+        "member_booking_issue_details",
         "contact_outlet",
         "pending_handoff_outlet",
         "main_menu",
@@ -5295,6 +5306,17 @@ def process_message(chat_id: str, user_text: str) -> str:
 
     if class_schedule_reply:
         return finish_reply(chat_id, text, class_schedule_reply)
+    
+    # --- NEW: Catch trial requests early so the LLM doesn't tell them to fill out a website form ---
+    current_stage = get_flow_stage(chat_id)
+    if not current_stage.startswith("trial_"):
+        trial_phrases = [
+            "book a trial", "schedule a trial", "want a trial", "free trial", 
+            "any trial", "trial class", "trail lesson", "trial lesson"
+        ]
+        if any(phrase in norm for phrase in trial_phrases) or norm in ["trial", "trail", "triel"] or ("trial" in norm and "available" in norm):
+            return start_flow_reply(chat_id, text, "trial_outlet", trial_start_text())
+    # -----------------------------------------------------------------------------------------------
 
     flow_reply = handle_active_flow_stage(chat_id, text)
 
@@ -5319,8 +5341,6 @@ def process_message(chat_id: str, user_text: str) -> str:
 
         return finish_reply(chat_id, text, reply)
 
-    if any(word in norm for word in ["trial", "free trial", "triel", "trail lesson", "trial lesson"]):
-        return start_flow_reply(chat_id, text, "trial_outlet", trial_start_text())
 
     if "refer" in norm and "friend" in norm:
         return start_flow_reply(
