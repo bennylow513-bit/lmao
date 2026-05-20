@@ -594,7 +594,7 @@ WEBSITE_KNOWLEDGE_URLS = [
     "https://www.jalyoga.com.sg/infrared-heat/",
     "https://www.jalyoga.com.sg/corporate-classes/",
     "https://www.jalyoga.com.sg/face-yoga-workshop/",
-    "https://www.jalyoga.com.sg/me-face-yoga/,"
+    "https://www.jalyoga.com.sg/me-face-yoga/",
     "https://www.jalyoga.com.sg/nepal-yoga-retreat/",
     "https://www.jalyoga.com.sg/yoga-personal-training/",
     "https://www.jalyoga.com.sg/reformer-pilates-personal-training/",
@@ -4853,7 +4853,7 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
         "credential", "credentials", "qualification", "qualifications",
         "profile", "bio", "experience", "highlight", "highlights",
         # Add these new terms so the bot recognizes them as valid questions!
-        "course", "courses", "workshop", "workshops", "retreat", "retreats"
+        "course", "courses", "workshop", "workshops", "retreat", "retreats","event", "events"   
     }
     if not clean:
         return False
