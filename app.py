@@ -3482,8 +3482,9 @@ CLASS_SCHEDULE_KEYWORDS = phrase_list(
     "schedule|schdule|sched|timetable|time table|class schedule|class timetable|class timing|class timings|class time|class times|classes today|today class|today classes|today schedule|tomorrow schedule|available slot|available slots|timeslot|timeslots"
 )
 CLASS_SCHEDULE_CONTEXT_PATTERNS = [
-    r"\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b.*\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b",
-    r"\b(time|timing|timings|schedule|timetable|available|availability|slot|slots)\b.*\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b",
+    # Removed 'available' and 'availability' to prevent false positives on general queries
+    r"\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b.*\b(time|timing|timings|schedule|timetable|slot|slots)\b",
+    r"\b(time|timing|timings|schedule|timetable|slot|slots)\b.*\b(class|classes|lesson|lessons|yoga|pilates|barre|trial)\b",
 ]
 CLASS_SCHEDULE_FUZZY_PHRASES = phrase_list(
     "schedule|schdule|schedle|schedual|secdule|scedule|scehdule|shedule|skedule|timetable|timetabel|timetble|time table|class schedule|class timing|class timetable"
