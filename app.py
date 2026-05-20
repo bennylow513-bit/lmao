@@ -28,9 +28,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-@app.before_request
-def ensure_inactivity_thread():
-    start_inactivity_checker()
+
 
 # ENV VARIABLES
 
@@ -3722,29 +3720,22 @@ def staff_info_reply(chat_id: str, text: str) -> str:
             chat_id,
             text,
             (
-                "You are the Jal Yoga assistant. You have two distinct modes:\n\n"
-                
-                "MODE 1: LISTING (If the user asks 'Who are the teachers?' or similar general questions):\n"
-                "- List all instructors from the website using bullet points.\n"
-                "- End the reply with [WAIT_FOR_NAME] and ask: 'Which staff member would you like to know more about?'\n\n"
-                
-                "MODE 2: BIO (If the user provides a specific name like 'Dion', 'Aman', etc.):\n"
-                "- IGNORE the previous list format. DO NOT use bullet points.\n"
-                "- Search the website for the specific staff member's profile.\n"
-                "- Provide a professional bio summary including their credentials and teaching style.\n"
-                "- Format it clearly: 'Name: [Name]\nCredentials: [List]\nStyle: [Description]'.\n"
-                "- Do not repeat the name as a list item.\n\n"
-                
-                "CRITICAL: If the input is a single name, you MUST provide the bio (Mode 2). Never just echo the name back."
+                "The customer is asking for information about an instructor or teacher. "
+                "Use ONLY the Jal Yoga website content and recent chat context. "
+                "IMPORTANT: Check the recent chat history first. If the customer asks who is teaching a specific class or course that was just mentioned, give them the exact instructor's name and details based on the website content. "
+                "If they ask a general question (like 'who are your teachers?') AND the chat history does not mention a specific class, list all the instructors found in the website content neatly using short bullet points. "
+                "End your reply by adding the exact tag [WAIT_FOR_NAME] followed by asking 'Which staff member would you like to know more about?' (translate the question into the customer's language, but DO NOT translate the [WAIT_FOR_NAME] tag). "
+                "If they name a specific instructor, share their confirmed credentials and highlights. "
+                "Do not invent details. If you are not sure, say you are not fully sure and use [HANDOFF]."
             ),
             (
-                "I’m sorry — I couldn't find a profile for that staff member in our records.\n"
+                "I’m sorry — I’m not fully sure based on the website information I have.\n"
                 "[HANDOFF]"
             ),
         )
     except Exception as e:
         print("STAFF INFO REPLY ERROR:", str(e), flush=True)
-        return "I’m sorry — I’m not fully sure about that staff member.\n[HANDOFF]"
+        return "I’m sorry — I’m not fully sure based on the website information I have.\n[HANDOFF]"
 
 
 def handle_staff_info_request(chat_id: str, text: str) -> str:
@@ -4866,15 +4857,14 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     if not clean:
         return False
 
-    # FIX 1: Added course, workshop, event, and retreat to this whitelist!
     # Do not interrupt normal short flow answers like "ben".
+   # Look for this block around line 1032 and add "membership" and "package" to the list:
     if len(clean.split()) <= 2 and not any(
         word in clean
         for word in [
             "schedule", "timetable", "yoga", "pilates", "barre", "reformer",
             "membership", "memberships", "package", "packages", "price", "prices", "pricing",
             "outlet", "studio", "teacher", "trainer", "instructor", "staff",
-            "course", "courses", "workshop", "workshops", "event", "events", "retreat", "retreats"
         ]
     ):
         return False
@@ -4885,8 +4875,8 @@ def is_flow_question_interrupt(chat_id: str, text: str) -> bool:
     if normalized in RESET_WORDS or normalized in OPT_IN_WORDS or normalized in OPT_OUT_WORDS:
         return False
 
-    # FIX 2: We completely deleted the `detect_outlet_choice` check from here!
-    # Now, questions like "What is the price for Katong?" will properly trigger an interruption.
+    if detect_outlet_choice(text, include_not_specified=True):
+        return False
 
     if is_customer_service_request(text) or is_customer_service_contact_request(text):
         return False
