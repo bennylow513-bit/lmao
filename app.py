@@ -29,6 +29,10 @@ load_dotenv()
 app = Flask(__name__)
 
 
+@app.before_request
+def ensure_inactivity_thread():
+    start_inactivity_checker()
+
 
 # ENV VARIABLES
 
@@ -5851,9 +5855,6 @@ def build_bot_reply(chat_id: str, user_text: str) -> str:
 
     return final_reply
 
-
-if os.getenv("AUTO_START_INACTIVITY_CHECKER", "true").lower() not in {"0", "false", "no"}:
-    start_inactivity_checker()
 
 if __name__ == "__main__":
     # Render passes the port as an environment variable, fallback to 5000 for local testing
