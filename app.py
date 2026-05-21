@@ -742,10 +742,11 @@ def fetch_website_knowledge() -> str:
     return "\n".join(parts).strip()
 
 
-# Website-only knowledge source.
-# We intentionally do NOT load knowledge.txt here.
-# Website-only knowledge source.
-# We explicitly inject important static facts here that the web crawler might miss.
+# Knowledge source.
+# The Jal Yoga website is the PRIMARY source for company facts.
+# knowledge.txt is a SUPPLEMENT: it only fills in the few details the web
+# crawler cannot pick up (conversation flows, studio policies, suspension
+# fees, refer-a-friend, handoff wording, etc.).
 LOCAL_KNOWLEDGE_TEXT = """
 ==================================================
 JAL YOGA OPERATING HOURS
@@ -753,8 +754,25 @@ JAL YOGA OPERATING HOURS
 Please refer to the Jal Yoga website content sections for each studio's specific operating hours and schedules.
 """
 
+# Website content first (primary source).
 WEBSITE_TEXT = fetch_website_knowledge() + "\n\n" + LOCAL_KNOWLEDGE_TEXT
-KNOWLEDGE_TEXT = WEBSITE_TEXT
+
+# knowledge.txt loaded separately as a supplement.
+SUPPLEMENT_KNOWLEDGE_TEXT = load_knowledge_text()
+
+# KNOWLEDGE_TEXT = website (primary) + knowledge.txt (supplement).
+# Website stays first so it wins for anything it already covers.
+if SUPPLEMENT_KNOWLEDGE_TEXT:
+    KNOWLEDGE_TEXT = (
+        WEBSITE_TEXT
+        + "\n\n"
+        + "==================================================\n"
+        + "SUPPLEMENTARY KNOWLEDGE (use only for details NOT in the website content above)\n"
+        + "==================================================\n"
+        + SUPPLEMENT_KNOWLEDGE_TEXT
+    )
+else:
+    KNOWLEDGE_TEXT = WEBSITE_TEXT
 
 
 # STUDIOS
@@ -2270,11 +2288,16 @@ Core rules:
 - Ask only one question at a time.
 - Do not mention Meta, webhook, Python, OpenAI, code, or internal system details.
 
+Source priority:
+- The Jal Yoga website content is the PRIMARY source. Always use it first.
+- The supplementary knowledge section is a backup. Use it ONLY for details that are not covered by the website content (such as conversation flows, studio policies, suspension fees, refer-a-friend, and handoff wording).
+- If the website and the supplement disagree on a fact, trust the website content.
+
 Live customer-service config:
 {live_contact_config_text()}
 
 Jal Yoga website content:
-{WEBSITE_TEXT}
+{KNOWLEDGE_TEXT}
 
 Recent chat:
 {history_text}
@@ -2304,6 +2327,11 @@ Use ONLY:
 1. The Jal Yoga website content below.
 2. The live customer-service config below.
 3. The recent chat context below.
+
+Source priority:
+- The Jal Yoga website content is the PRIMARY source. Always use it first.
+- The supplementary knowledge section is a backup. Use it ONLY for details not covered by the website content (such as conversation flows, studio policies, suspension fees, refer-a-friend, and handoff wording).
+- If the website and the supplement disagree on a fact, trust the website content.
 
 Language:
 - Customer language: {language}
@@ -2344,7 +2372,7 @@ Live config:
 {live_contact_config_text()}
 
 Jal Yoga website content:
-{WEBSITE_TEXT}
+{KNOWLEDGE_TEXT}
 
 Current time in Singapore:
 {now_sg()}
@@ -2550,6 +2578,22 @@ def class_cancellation_policy(next_step: str) -> str:
     )
 
 
+def membership_suspension_policy(next_step: str) -> str:
+    return (
+        "Membership Suspension 🙏\n\n"
+        "Here is a quick overview before we proceed:\n\n"
+        "Medical Suspension:\n"
+        "- The extension fee can be waived with valid documentation from a certified physician\n"
+        "- Processed in blocks of one month\n"
+        "- Your membership expiry is adjusted once the documentation is verified\n\n"
+        "Travel / Non-Medical Suspension:\n"
+        "- An extension fee of S$50 per month applies\n"
+        "- Processed in one-month blocks, up to a maximum of 3 months\n"
+        "- Your membership expiry is extended once the fee is processed\n\n"
+        f"{next_step}"
+    )
+
+
 def studio_locations_text() -> str:
     outlet_label = "outlet" if len(STUDIOS) == 1 else "outlets"
     lines = [f"We have {len(STUDIOS)} {outlet_label}:", ""]
@@ -2611,12 +2655,12 @@ CURRENT_MEMBER_CHOICES = {
     ),
     "2": (
         "member_suspension_details",
-        lambda: (
-            "Sure — I’ll connect you to Customer Service for membership suspension. 🙏\n\n"
-            "Please reply with:\n"
+        lambda: membership_suspension_policy(
+            "To continue, please reply with:\n"
             "- Medical Suspension or Non-Medical / Travel Suspension\n"
             "- Your preferred outlet, if any\n"
-            "- Any important details"
+            "- Any important details\n\n"
+            "After you send the details, I’ll connect you to Customer Service here."
         ),
     ),
     "3": (
