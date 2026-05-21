@@ -2261,7 +2261,9 @@ Language rule:
 Core rules:
 - Help only with Jal Yoga enquiries.
 - Speak naturally and confidently. NEVER use phrases like "The website says" or "According to the text". Just state the facts directly.
-- Format neatly: Use line breaks between different topics. ALWAYS use short bullet points when listing items.
+- FORMAT NEATLY FOR MOBILE: Never write long paragraphs. Break long explanations into short chunks (maximum 1 to 2 sentences per paragraph).
+- ALWAYS use short bullet points when listing 2 or more items. 
+- Leave a clear blank line between every paragraph and list so it is easy to read.
 - Answer ONLY what the customer specifically asks for. Keep answers short and direct.
 - Do not add extra details like address, facilities, amenities, or parking unless explicitly requested.
 - Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, staff information, or membership details.
@@ -2313,7 +2315,9 @@ Language:
 Core rules:
 - Help only with Jal Yoga enquiries.
 - Speak naturally and confidently. NEVER use phrases like "The website says" or "According to the text". Just state the facts directly.
-- Format neatly: Use line breaks between different topics. ALWAYS use short bullet points when listing items.
+- FORMAT NEATLY FOR MOBILE: Never write long paragraphs. Break long explanations into short chunks (maximum 1 to 2 sentences per paragraph).
+- ALWAYS use short bullet points when listing 2 or more items. 
+- Leave a clear blank line between every paragraph and list so it is easy to read.
 - Answer ONLY what the customer specifically asks for. Keep answers short and direct.
 - Do not add extra details like address, facilities, amenities, or parking unless explicitly requested.
 - Do not invent prices, promotions, schedules, trainers, live slots, outlet phone numbers, policies, staff information, or membership details.
@@ -3639,9 +3643,11 @@ def is_staff_info_request(text: str) -> bool:
     if any(keyword in normalized for keyword in STAFF_INFO_KEYWORDS):
         return True
 
-    # Handles messages like: "can i know more about Amen" after a schedule answer.
+# Handles messages like: "can i know more about Amen" after a schedule answer.
     if any(phrase in normalized for phrase in ["know more about", "more info about", "more information about"]):
-        return True
+        # NEW: Stop it from triggering if the user is asking about "it" or "this" (like a class)
+        if not any(ignore in normalized for ignore in ["about it", "about this", "about that", "about the class"]):
+            return True
 
     return bool((words & info_words) and (words & (staff_words | credential_words)))
 
@@ -4943,7 +4949,7 @@ def answer_flow_question_then_continue(chat_id: str, text: str) -> str:
         staff_request = is_staff_info_request(text)
         
         # FIX: Route any message with course keywords to the class description logic
-        course_keywords = {"yoga", "pilates", "barre", "reformer", "training", "course", "workshop", "retreat"}
+        course_keywords = {"yoga", "pilates", "barre", "reformer", "training", "course", "workshop", "retreat", "infrared", "heat"}
         class_type_request = is_class_type_request(text) or any(word in normalize(text) for word in course_keywords)
         
         schedule_request = is_class_schedule_request(text) or is_schedule_followup_request(chat_id, text)
