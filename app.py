@@ -2188,15 +2188,18 @@ def detect_user_language(chat_id: str, user_text: str) -> str:
         return current_language
 
     try:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "Detect the dominant language of the user's message. Return only the language name in English. Examples: English, Chinese, Malay, Tamil, Thai, Portuguese, Spanish, French, Japanese, Korean. If the message is only a name, number, outlet, email, phone number, command, menu choice, or unclear, return Unknown."},
-                {"role": "user", "content": user_text}
-            ]
+            instructions=(
+                "Detect the dominant language of the user's message. "
+                "Return only the language name in English. "
+                "Examples: English, Chinese, Malay, Tamil, Thai, Portuguese, Spanish, French, Japanese, Korean. "
+                "If the message is only a name, number, outlet, email, phone number, command, menu choice, or unclear, return Unknown."
+            ),
+            input=user_text,
         )
 
-        language = (response.choices[0].message.content or "").strip()
+        language = (response.output_text or "").strip()
 
         if language and language.lower() != "unknown":
             return remember_user_language(chat_id, language)
@@ -2214,15 +2217,13 @@ def openai_text_reply(instructions: str, user_text: str, fallback: str, error_la
         return fallback
 
     try:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": instructions},
-                {"role": "user", "content": user_text}
-            ]
+            instructions=instructions,
+            input=user_text,
         )
 
-        reply = (response.choices[0].message.content or "").strip()
+        reply = (response.output_text or "").strip()
         if reply:
             return reply
 
@@ -3726,19 +3727,20 @@ def staff_info_reply(chat_id: str, text: str) -> str:
                 "The customer is asking for information about an instructor or teacher. "
                 "Use ONLY the Jal Yoga website content and recent chat context. "
                 "IMPORTANT: Check the recent chat history first. If the customer asks who is teaching a specific class or course that was just mentioned, give them the exact instructor's name and details based on the website content. "
-                "If they ask a general question (like 'who are your teachers?' or 'how many teachers') AND the chat history does not mention a specific class, list all the instructors found in the website content. "
-                "CRITICAL FORMATTING RULES: "
-                "1. DO NOT add any conversational filler, intro, or outro (e.g. no 'Here is the list', no 'I am not sure how many'). "
-                "2. Format the list strictly: put each instructor's name on its own line starting with '- '. "
-                "3. On the following line, you MUST write ONE short description as a single indented sub-bullet starting with three spaces and a dash ('   - '). "
-                "4. Keep the description brief — roughly 5 to 10 words summarising what that instructor specialises in. "
-                "5. Put one blank line between each instructor so the list is easy to read. "
-                "Example format:\n"
+                "If they ask a general question (like 'who are your teachers?') AND the chat history does not mention a specific class, list all the instructors found in the website content. "
+                "Format the list like this: put each instructor's name on its own line starting with '- ' (a dash and a space). "
+                "On the following line, write ONE short description as a single indented sub-bullet starting with three spaces, a dash and a space ('   - '). "
+                "Keep the description brief — roughly five to ten words summarising what that instructor specialises in. "
+                "If an instructor has many specialties, summarise them into one short phrase instead of listing them all. "
+                "ALWAYS use exactly ONE sub-bullet per instructor, even if the customer asks to split by class type or specialty — in that case still summarise everything they teach into that single short sub-bullet. "
+                "Do NOT create a separate sub-bullet for each class type, and do NOT create more than two levels of bullets. "
+                "Do NOT group the instructors under headings such as 'Men' and 'Women', or any other category, UNLESS the customer has clearly and explicitly asked you to group them that way (for example 'split the list into male and female'). If they have not explicitly asked, keep it as one single flat list. "
+                "Put one blank line between each instructor so the list is easy to read. For example:\n"
                 "- Aneesh\n"
                 "   - Breath awareness and posture adjustment specialist\n"
                 "\n"
                 "- April\n"
-                "   - Alignment and inclusive classes for all levels\n\n"
+                "   - Alignment and inclusive classes for all levels\n"
                 "Base the description on the real website content, do not invent it. "
                 "End your reply by adding the exact tag [WAIT_FOR_NAME] followed by asking 'Which staff member would you like to know more about?' (translate the question into the customer's language, but DO NOT translate the [WAIT_FOR_NAME] tag). "
                 "If they name a specific instructor, share their confirmed credentials and highlights. "
@@ -4817,30 +4819,24 @@ def handle_pending_handoff_outlet(chat_id: str, text: str) -> str:
 
 # FINAL TRANSLATION LAYER
 
-# FINAL TRANSLATION LAYER
-
 def translate_reply_if_needed(chat_id: str, user_text: str, reply: str) -> str:
     language = USER_LANGUAGE.get(chat_id, "English")
 
     if language.lower() in {"english", "unknown"}:
         return reply
-        
-    instructions = (
-        f"You are a strict translation engine. Translate the entire text below into {language}. "
-        "CRITICAL RULES: "
-        f"1. Translate EVERY user-facing sentence fully into {language}. "
-        "2. Preserve staff names, all menu numbers, phone numbers, Telegram IDs, URLs, emojis, [HANDOFF] tags, and formatting. "
-        "3. Do not add any new information, AI chatter, or conversational filler. "
-        f"4. If you absolutely cannot translate the text into {language} (for example, if the language is unsupported or unclear), you MUST return the exact original English text without any notes."
-    )
-        
     return openai_text_reply(
-        instructions,
+        (
+            f"Translate the assistant reply into {language}. "
+            "Translate every user-facing sentence fully. "
+            "Preserve menu numbers, phone numbers, Telegram IDs, URLs, emojis, and formatting. "
+            "Do not add new information."
+        ),
         reply,
-        reply, # The fallback is the original English reply
+        reply,
         "TRANSLATION ERROR",
         show_traceback=False,
     )
+
 
 
 def translate_text_to_language(text: str, language: str) -> str:
@@ -4848,19 +4844,15 @@ def translate_text_to_language(text: str, language: str) -> str:
     if not text.strip() or language.lower() in {"unknown"}:
         return text
 
-    instructions = (
-        f"You are a strict translation engine. Translate the entire text below into {language}. "
-        "CRITICAL RULES: "
-        f"1. Translate EVERY user-facing sentence fully into {language}. "
-        "2. Preserve staff names, menu numbers, phone numbers, Telegram IDs, URLs, emojis, dates, times, and formatting. "
-        "3. Do not add any new information or conversational filler. "
-        f"4. If you absolutely cannot translate the text into {language}, return the exact original English text without any notes."
-    )
-
     return openai_text_reply(
-        instructions,
+        (
+            f"Translate the assistant reply into {language}. "
+            "Translate every user-facing sentence fully. "
+            "Preserve class names, menu numbers, phone numbers, Telegram IDs, URLs, emojis, dates, times, and formatting. "
+            "Do not add new information."
+        ),
         text,
-        text, # The fallback is the original English text
+        text,
         "LANGUAGE SWITCH TRANSLATION ERROR",
         show_traceback=False,
     )
