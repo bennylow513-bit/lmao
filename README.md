@@ -1,6 +1,6 @@
 # Jal Yoga Singapore — Telegram AI Chatbot
 
-A 24/7 AI-powered Telegram customer-service bot for Jal Yoga Singapore. It handles trial bookings, membership enquiries, studio information, and hands off complex issues to Customer Service — all inside Telegram.
+A 24/7 AI-powered Telegram customer-service bot for Jal Yoga Singapore. It handles trial bookings, membership enquiries, studio information, live two-way Customer Service chat, and multilingual support — all inside Telegram.
 
 ---
 
@@ -15,7 +15,7 @@ A 24/7 AI-powered Telegram customer-service bot for Jal Yoga Singapore. It handl
 - [Run Locally](#run-locally)
 - [Telegram Webhook Setup](#telegram-webhook-setup)
 - [Deploy to Render](#deploy-to-render)
-- [Debug Routes](#debug-routes)
+- [Routes](#routes)
 - [Helper Scripts](#helper-scripts)
 - [Common GitHub Commands](#common-github-commands)
 - [Troubleshooting](#troubleshooting)
@@ -31,9 +31,10 @@ Built with:
 - **Flask** — web server and webhook handler
 - **Telegram Bot API** — messaging interface
 - **OpenAI** — AI replies
-- **Google Sheets** *(optional)* — chatlog sync
+- **Google Sheets** *(optional)* — chatlog sync (primary storage)
 - **Render** — cloud deployment
 - **`knowledge.txt`** — editable knowledge base
+- **Jal Yoga website** — fetched at startup as supplementary knowledge
 
 ---
 
@@ -41,7 +42,7 @@ Built with:
 
 ### Main Menu
 
-Users trigger the menu by typing `hi`, `hello`, `start`, or `/start`.
+Users trigger the menu by typing `hi`, `hello`, `start`, `/start`, `menu`, and several other reset words (including common greetings in other languages).
 
 ```
 Namaste! Thank you for reaching out to Jal Yoga. 🙏
@@ -51,6 +52,10 @@ Namaste! Thank you for reaching out to Jal Yoga. 🙏
 3. I'd like to find out more about Jal Yoga
 4. Corporate/Partnerships
 5. Staff Hub
+
+You can also type CUSTOMER SERVICE anytime, in any language,
+to speak to our team.
+Reply STOP anytime to stop receiving follow-up messages.
 ```
 
 ---
@@ -63,25 +68,44 @@ Guides the user through a step-by-step trial booking:
 2. Full name
 3. Fitness goal
 
-Produces a booking summary and notifies the studio team.
+Produces a booking summary and notifies the relevant outlet team. Users who have already booked can also request to change their trial outlet, and the previous outlet is notified of the change.
 
 ---
 
 ### Current Member Flow
 
-Supports enquiries for existing members, including class cancellation, membership suspension, booking help, and referrals.
+Supports enquiries for existing members:
+
+```
+1. Class Cancellation
+2. Membership Suspension
+3. I need help with my class booking
+4. I would like to refer a friend
+```
+
+Referral details are forwarded to the relevant outlet.
 
 ---
 
 ### General Enquiry Flow
 
-Answers questions about studio locations and hours, class types, events, and retreats — sourced strictly from `knowledge.txt` and the Jal Yoga website.
+Answers questions about studio locations and hours, class types, facilities, schedules, events, and retreats — sourced from `knowledge.txt` and the Jal Yoga website knowledge fetched at startup.
 
 ---
 
-### Customer Service Handoff
+### Staff Hub
 
-When the bot is unsure or a user asks for a human, it creates a structured handoff summary and routes it to the correct Customer Service channel (main or outlet-specific).
+Menu option **5** is a hub for staff-related requests. Among other things, it can list instructor names and then answer follow-up questions about a specific instructor.
+
+> *Review note:* Confirm the exact Staff Hub behaviour and any access restrictions before publishing this section.
+
+---
+
+### Customer Service Handoff & Live Chat
+
+The bot has two levels of Customer Service support:
+
+**1. Handoff summary** — when the bot is unsure or a user asks for a human, it creates a structured summary and routes it to the correct Customer Service channel (main or outlet-specific).
 
 ```
 I'll pass this to our Customer Service team.
@@ -92,28 +116,57 @@ Summary:
 - Message: I want to cancel my membership
 ```
 
+**2. Live two-way chat** — once a handoff opens, the bot relays messages directly between the customer and Customer Service staff:
+
+- Customer messages are forwarded to the assigned CS chat.
+- CS staff reply simply by replying in their Telegram chat, or with the backup command `/reply <chat_id> <message>`.
+- Either side can end the session; staff can close with `/close` or by typing `close`.
+- Messages containing blocked/offensive words are filtered and not relayed.
+
 ---
 
 ### Nearest Outlet Recommendation
 
-Users can type their location, postal code, MRT station, or area and the bot recommends the likely nearest outlet.
+Users can type their location, postal code, MRT station, or area, and the bot recommends the likely nearest outlet. Outlet-matching rules can be customised via `knowledge.txt`.
+
+---
+
+### Live Class Schedule (Mindbody)
+
+The bot can fetch live class schedule information for outlets directly from Mindbody schedule widgets, so users can ask about upcoming classes.
+
+> *Review note:* Confirm which outlets have working Mindbody widgets configured before relying on this in production.
 
 ---
 
 ### Multilingual Support
 
-The bot detects the user's language and replies accordingly. Supported languages include English, Chinese, Malay, Tamil, Thai, Japanese, Korean, Portuguese, Spanish, and French. Singlish and common typos are also handled gracefully.
+The bot detects the user's language and replies accordingly. Supported languages include English, Chinese, Malay, Tamil, Thai, Japanese, Korean, Portuguese, Spanish, and French. Singlish and common typos are handled gracefully.
+
+---
+
+### Opt-Out / Opt-In
+
+Users can stop follow-up messages by sending `STOP` (and similar phrases like `unsubscribe`, `remove me`). They can opt back in with `START` or `subscribe`. Opt-out status is stored in the file named by `OPT_OUT_FILE`.
+
+---
+
+### Inactivity Handling
+
+If a conversation goes quiet, a background checker sends a warning after `INACTIVITY_WARNING_SECONDS` and closes the session after `INACTIVITY_CLOSE_SECONDS`. The checker runs automatically.
 
 ---
 
 ### Chatlog System
 
-All conversations are saved in two formats:
+All conversations are logged. Storage destinations:
 
-- `chat_logs.jsonl` — main log file (flat)
-- `chatlogs/` — per-customer log files (by chat ID)
+- **Google Sheet** — primary destination when configured (see [Environment Variables](#environment-variables))
+- **Local files** — only when `CHATLOG_LOCAL_ENABLED=true`:
+  - `chat_logs.jsonl` — flat log file
+  - `chatlogs/` — per-customer log files (by chat ID)
 
-Optionally synced to a Google Sheet (see [Environment Variables](#environment-variables)).
+Sensitive content is lightly redacted before storage: email addresses, OTP/password/CVV phrases, and long numeric strings (9+ digits) are masked.
 
 Example log entry:
 
@@ -140,8 +193,8 @@ Example log entry:
 ├── README.md
 ├── .env                       # Local secrets (do not commit)
 ├── .gitignore
-├── chat_logs.jsonl            # Flat chatlog (do not commit)
-├── chatlogs/                  # Per-customer chatlogs (do not commit)
+├── chat_logs.jsonl            # Flat chatlog (local logging only; do not commit)
+├── chatlogs/                  # Per-customer chatlogs (local logging only; do not commit)
 └── templates/                 # Flask HTML templates
 ```
 
@@ -220,7 +273,7 @@ Create a `.env` file in the project root. **Never commit this file.**
 ```env
 # OpenAI
 OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-5.4-mini
 
 # Telegram
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
@@ -237,19 +290,25 @@ DEBUG_ROUTE_TOKEN=your_private_debug_token_here
 # App
 PORT=5000
 OPT_OUT_FILE=telegram_opt_out_users.json
+FLASK_DEBUG=false
 
 # Chatlogs
 CHATLOG_ENABLED=true
+CHATLOG_LOCAL_ENABLED=false
 CHATLOG_DIR=chatlogs
 CHATLOG_FILE=chat_logs.jsonl
 CHATLOG_MAX_VIEW_LINES=300
 
 # Inactivity timeout
-AUTO_START_INACTIVITY_CHECKER=true
 INACTIVITY_WARNING_SECONDS=300
 INACTIVITY_CLOSE_SECONDS=600
 INACTIVITY_CHECK_SECONDS=30
 ```
+
+> **Notes:**
+> - `OPENAI_MODEL` defaults to `gpt-5.4-mini` if unset. Set it to any model your API key can access.
+> - `CHATLOG_LOCAL_ENABLED` defaults to `false` — local `.jsonl` and `chatlogs/` files are written only when this is `true`. The Google Sheet is the primary destination.
+> - The inactivity checker starts automatically; there is no separate enable/disable variable.
 
 ### Outlet-specific contacts *(optional)*
 
@@ -273,12 +332,17 @@ If outlet-specific values are left blank, the bot falls back to the main Custome
 
 ### Google Sheets integration *(optional)*
 
-To sync chatlogs to a Google Sheet:
+To sync chatlogs to a Google Sheet, set `GOOGLE_SHEET_ID` and **one** of the credential options:
 
 ```env
 GOOGLE_SHEET_ID=your_google_sheet_id_here
 GOOGLE_SHEET_WORKSHEET=Chat Logs
-GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=your_base64_encoded_service_account_json
+
+# Provide ONE of the following credential sources:
+GOOGLE_SERVICE_ACCOUNT_JSON=                 # raw service account JSON
+GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=          # base64-encoded service account JSON
+GOOGLE_SERVICE_ACCOUNT_FILE=                 # path to a service account JSON file
+# (GOOGLE_APPLICATION_CREDENTIALS is also accepted as a file path)
 ```
 
 The service account must have **Editor** access to the sheet.
@@ -291,7 +355,7 @@ The service account must have **Editor** access to the sheet.
 python app.py
 ```
 
-Then open `http://localhost:5000` to confirm the server is running.
+Then open `http://localhost:5000` to confirm the server is running, or `http://localhost:5000/health` for a status check.
 
 > **Note:** Telegram webhooks require a public HTTPS URL. For local testing, use [ngrok](https://ngrok.com/) or deploy to Render.
 
@@ -348,7 +412,18 @@ Add all variables from the [Environment Variables](#environment-variables) secti
 
 ---
 
-## Debug Routes
+## Routes
+
+### Public routes
+
+| Route | Method | Description |
+|---|---|---|
+| `/` | GET | Basic status page |
+| `/health` | GET | Health/status check |
+| `/telegram/webhook` | GET | Confirms the webhook route exists |
+| `/telegram/webhook` | POST | Telegram webhook (used by Telegram) |
+
+### Debug routes
 
 All debug routes require your `DEBUG_ROUTE_TOKEN`.
 
@@ -363,9 +438,10 @@ https://YOUR-RENDER-APP.onrender.com/debug/ROUTE?token=YOUR_DEBUG_ROUTE_TOKEN
 | `/debug/chatlogs` | List all per-customer chatlogs |
 | `/debug/chatlog?chat_id=ID` | View one customer's chatlog |
 | `/debug/test-chatlog` | Write a test chatlog entry |
-| `/debug/config` | Check current environment config |
 | `/debug/outlets` | Check outlet contact config |
 | `/debug/trial-bookings` | View trial booking summaries |
+
+> *Changed from previous README:* there is no `/debug/config` route. Use `/health` for status, and `/debug/outlets` for outlet configuration.
 
 ---
 
@@ -375,7 +451,7 @@ https://YOUR-RENDER-APP.onrender.com/debug/ROUTE?token=YOUR_DEBUG_ROUTE_TOKEN
 
 Downloads the Render chatlog into VS Code every 5 seconds. Useful for monitoring live conversations without SSH access.
 
-Update these two values at the top of the file, then run:
+Update the two values at the top of the file, then run:
 
 ```bash
 python auto_render_chatlog.py
@@ -431,7 +507,7 @@ Then immediately rotate any exposed API keys or tokens.
 1. Confirm the Render service is running (no crashes in logs)
 2. Verify the Telegram webhook is set and returns `{"ok":true}`
 3. Check that `TELEGRAM_BOT_TOKEN` and `TELEGRAM_SECRET_TOKEN` match exactly
-4. Look for incoming update logs in Render
+4. Look for `INCOMING TELEGRAM UPDATE` logs in Render
 
 ### OpenAI does not reply
 
@@ -442,9 +518,16 @@ Then immediately rotate any exposed API keys or tokens.
 ### Chatlog not updating
 
 1. Confirm `CHATLOG_ENABLED=true`
-2. Send a test message to the bot
-3. Open `/debug/test-chatlog?token=YOUR_TOKEN` to force a test entry
-4. Check `/debug/chat-log-file?token=YOUR_TOKEN`
+2. For local files, confirm `CHATLOG_LOCAL_ENABLED=true`
+3. For Google Sheets, confirm `GOOGLE_SHEET_ID` and a credential variable are set, and the service account has Editor access
+4. Open `/debug/test-chatlog?token=YOUR_TOKEN` to force a test entry
+5. Check `/debug/chat-log-file?token=YOUR_TOKEN`
+
+### Live Customer Service chat not relaying
+
+1. Confirm `CUSTOMER_SERVICE_TELEGRAM_CHAT_ID` (or the relevant outlet chat ID) is set
+2. Confirm CS staff are replying within the correct Telegram chat
+3. Note that messages with blocked words are intentionally not relayed
 
 ### `requirements.txt` missing on Render
 
@@ -487,7 +570,7 @@ uploads/
 - Customer Service chat IDs
 - Google service account credentials
 
-The bot is also designed never to request sensitive information (NRIC, card numbers, CVV, OTP, passwords, bank details, or medical documents) through the chat.
+The bot is designed never to request sensitive information (NRIC, card numbers, CVV, OTP, passwords, bank details, or medical documents) through the chat. It also redacts emails, OTP/password phrases, and long numbers from chatlogs, and filters offensive/blocked words from the live Customer Service relay.
 
 ---
 
